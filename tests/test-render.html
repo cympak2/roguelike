@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Render Test</title>
+    <style>
+        body { background: #000; color: #0f0; font-family: monospace; }
+        #output { white-space: pre; font-size: 12px; line-height: 14px; }
+    </style>
+</head>
+<body>
+    <h3>Testing Town Generation & Rendering</h3>
+    <div id="output"></div>
+    <script type="module">
+        import { TownGenerator } from './dist/assets/index-CKyMFlSE.js';
+        
+        console.log('Loading town generator...');
+        
+        try {
+            const gen = new TownGenerator();
+            const result = gen.generate();
+            const map = result.map;
+            
+            console.log('Town generated:', map.width, 'x', map.height);
+            
+            // Render a small portion
+            let output = '';
+            for (let y = 0; y < 20; y++) {
+                for (let x = 0; x < 40; x++) {
+                    const tile = map.getTile(x, y);
+                    if (!tile) {
+                        output += '?';
+                    } else {
+                        switch(tile.type) {
+                            case 'WALL': output += '#'; break;
+                            case 'FLOOR': output += '.'; break;
+                            case 'GRASS': output += ','; break;
+                            case 'WATER': output += '~'; break;
+                            case 'STAIRS_DOWN': output += '>'; break;
+                            default: output += ' ';
+                        }
+                    }
+                }
+                output += '\n';
+            }
+            
+            document.getElementById('output').textContent = output;
+            console.log('Render complete');
+        } catch (e) {
+            console.error('Error:', e);
+            document.getElementById('output').textContent = 'ERROR: ' + e.message;
+        }
+    </script>
+</body>
+</html>
