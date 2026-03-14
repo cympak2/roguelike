@@ -3,7 +3,7 @@ import { ASCIIRenderer } from '../ui/ascii-renderer';
 import { CharacterClass } from '../config/class-data';
 import { Player } from '../entities/player';
 import { NPC, NPCType as EntityNPCType } from '../entities/npc';
-import { Monster } from '../entities/monster';
+import { Monster, AIBehavior } from '../entities/monster';
 import {
   getNPCDefinitionsForContext,
   NPCType as ConfigNPCType,
@@ -14,7 +14,7 @@ import { TownGenerator, type NPCSpawnPoint } from '../world/town-gen';
 import { DungeonGenerator } from '../world/dungeon-gen';
 import { fovSystem } from '../world/fov';
 import { MessageLog, MessageType } from '../ui/message-log';
-import { CombatSystem } from '../systems/combat-system';
+import { CombatSystem, type Spell } from '../systems/combat-system';
 import { MonsterSpawnSystem } from '../systems/monster-spawn-system';
 import { ItemSpawnSystem } from '../systems/item-spawn-system';
 import { MonsterAISystem, ActionType } from '../systems/monster-ai-system';
@@ -83,6 +83,23 @@ interface CorpseInventoryItem {
   corpseEdible?: boolean;
   corpseCooked?: boolean;
   corpseSeasoned?: boolean;
+  affixAttackBonus?: number;
+  affixCritChanceBonus?: number;
+  affixMagicResistBonus?: number;
+}
+
+interface InventoryChangeContext {
+  itemId?: string;
+  itemEffect?: string;
+  phase?: 'before_use' | 'after_use';
+}
+
+interface RunAnalytics {
+  kills: number;
+  damageDealt: number;
+  maxDepthReached: number;
+  causeOfDeath: string;
+  buildUsed: string;
 }
 
 const ALTAR_BOONS: AltarEffect[] = [
@@ -210,6 +227,29 @@ const BLACKSMITH_RECIPES: Record<string, BlacksmithRecipe> = {
     successMessage: 'Hilda compounds your reagents into an antivenom pack.',
   },
 };
+const COMPANION_SUMMON_EFFECT_ID = 'summon_companion';
+const COMPANION_SUMMON_ITEM_ID = 'scroll_companion_call';
+const COMPANION_SPELL_MANA_COST = 20;
+const COMPANION_SPELL_KEY = 'v';
+const COMPANION_MAX_CHASE_DISTANCE = 8;
+const COMPANION_NAME = 'Summoned Wolf';
+const COMPANION_TEMPLATE_ID = 'summoned_wolf_companion';
+const COMPANION_COLOR = 0x77ddff;
+const COMPANION_GLYPH = 'w';
+const COMPANION_STATS = {
+  maxHP: 38,
+  attack: 7,
+  defense: 3,
+  speed: 7,
+};
+const LIGHTNING_SPELL_KEY = 'l';
+const LIGHTNING_SPELL_RANGE = 6;
+const LIGHTNING_SPELL_MANA_COST = 18;
+const LIGHTNING_SPELL_POWER = 3;
+const WATER_LIGHTNING_BONUS_MULTIPLIER = 1.5;
+const TREE_COVER_DAMAGE_REDUCTION = 2;
+const LAVA_BURN_DAMAGE = 4;
+const BUILD_ID = 'rogue@0.0.0';
 
 export class GameScene extends Phaser.Scene {
   private asciiRenderer!: ASCIIRenderer;
@@ -245,6 +285,13 @@ export class GameScene extends Phaser.Scene {
   private activeAltarPact?: ActiveAltarPact;
   private altarUsedFloors = new Set<number>();
   private altarOffersByFloor = new Map<number, { boon: AltarEffect; curse: AltarEffect }>();
+  private runAnalytics: RunAnalytics = {
+    kills: 0,
+    damageDealt: 0,
+    maxDepthReached: 0,
+    causeOfDeath: 'Unknown',
+    buildUsed: BUILD_ID,
+  };
 
   constructor() {
     super({ key: 'GameScene' });
@@ -310,10 +357,17 @@ export class GameScene extends Phaser.Scene {
     // Initialize message log
     this.messageLog = new MessageLog();
     this.messageLog.addMessage(
-      `Welcome, ${data.selectedClass?.name || 'Warrior'}! Move with arrows/WASD. E: eat corpse, C: cook near fire, M: make fire, </,: up stairs, >/.: down stairs.`
+      `Welcome, ${data.selectedClass?.name || 'Warrior'}! Move with arrows/WASD. E: eat corpse, C: cook near fire, M: make fire, V: summon wolf, L: lightning, </,: up stairs, >/.: down stairs.`
     );
     
     console.log('Player created:', this.player.playerClass, 'at', this.player.x, this.player.y);
+    this.runAnalytics = {
+      kills: 0,
+      damageDealt: 0,
+      maxDepthReached: 0,
+      causeOfDeath: 'Unknown',
+      buildUsed: BUILD_ID,
+    };
   }
 
   create(): void {
@@ -452,6 +506,7 @@ export class GameScene extends Phaser.Scene {
       key === 'c' ||
       key === 'm' ||
       key === 'e' ||
+      key === LIGHTNING_SPELL_KEY ||
       key === ',' ||
       key === '.' ||
       key === '<' ||
@@ -572,6 +627,12 @@ export class GameScene extends Phaser.Scene {
       case 'e':
         this.tryEatCorpse();
         return;
+      case COMPANION_SPELL_KEY:
+        this.tryCastCompanionSpell();
+        return;
+      case LIGHTNING_SPELL_KEY:
+        this.tryCastLightningBolt();
+        return;
       case '<':
       case ',':
         this.tryUseStairs('up');
@@ -609,8 +670,14 @@ export class GameScene extends Phaser.Scene {
       // Check if there's a monster at target location - ATTACK IT!
       const monster = this.monsters.find(m => m.x === newX && m.y === newY && !m.isDead());
       if (monster) {
+        if (monster.isFriendlySummon) {
+          this.messageLog.addMessage(`${monster.name} is your ally.`, MessageType.SYSTEM);
+          this.render();
+          return;
+        }
         console.log('Attacking monster:', monster.name);
-        const result = this.combatSystem.meleeAttack(this.player, monster);
+        const result = this.resolvePlayerMeleeAttack(monster);
+        this.recordPlayerDamageDealt(result.damage);
         this.messageLog.addMessage(result.message, MessageType.COMBAT);
         this.applyDurabilityWearOnPlayerAttack();
         this.emitPlayerNoise(newX, newY, NOISE_BUDGET.PLAYER_MELEE, 'player_melee');
@@ -618,14 +685,7 @@ export class GameScene extends Phaser.Scene {
         // Handle monster death
           if (result.killed && monster.isDead()) {
             console.log('Monster killed:', monster.name);
-            this.combatSystem.handleDeath(monster, this.gameMap);
-            this.gameMap.removeEntity(monster);
-            this.monsterAISystem.cleanupMonster(monster);
-            
-            // Award XP to player
-            if (monster.xpReward) {
-              this.awardPlayerXP(monster.xpReward);
-            }
+            this.handleHostileMonsterDeath(monster, true);
         }
         
         // Monster attacked, so process monster turns
@@ -668,6 +728,7 @@ export class GameScene extends Phaser.Scene {
     if (tile.type === TileType.CAMPFIRE) {
       const fireDamage = this.player.takeDamage(4);
       this.messageLog.addMessage(`You step into the fire and take ${fireDamage} damage!`, MessageType.DAMAGE);
+      this.noteDeathCauseIfPlayerDead('Burned by fire');
       if (this.player.isDead()) {
         this.handlePlayerDeath();
         return;
@@ -730,6 +791,7 @@ export class GameScene extends Phaser.Scene {
 
     trap.revealed = true;
     const damage = this.player.takeDamage(trap.damage);
+    this.noteDeathCauseIfPlayerDead('Killed by a spike trap');
     this.emitPlayerNoise(x, y, NOISE_BUDGET.PLAYER_TRAP, 'trigger_trap');
     this.messageLog.addMessage(
       `You trigger a spike trap and take ${damage} damage!`,
@@ -775,6 +837,7 @@ export class GameScene extends Phaser.Scene {
       this.emitPlayerNoise(this.player.x, this.player.y, NOISE_BUDGET.PLAYER_INTERACT, 'disarm_trap');
     } else {
       const damage = this.player.takeDamage(Math.max(1, Math.floor(trap.damage / 2)));
+      this.noteDeathCauseIfPlayerDead('Killed by a trap while disarming');
       trap.revealed = true;
       this.messageLog.addMessage(`Disarm failed! The trap wounds you for ${damage} damage.`, MessageType.DAMAGE);
       this.emitPlayerNoise(this.player.x, this.player.y, NOISE_BUDGET.PLAYER_TRAP, 'failed_disarm');
@@ -1154,6 +1217,7 @@ export class GameScene extends Phaser.Scene {
       const maxSafeDamage = this.player.currentHP - 1;
       const damage = Math.min(maxSafeDamage, 4 + Math.floor(Math.random() * 7));
       this.player.takeDamage(damage);
+      this.noteDeathCauseIfPlayerDead('Killed by tainted fountain water');
       this.messageLog.addMessage(`The water is tainted! You suffer ${damage} damage.`, MessageType.DAMAGE);
 
       if (Math.random() < 0.5) {
@@ -1315,8 +1379,14 @@ export class GameScene extends Phaser.Scene {
       return;
     }
 
+    this.applyLavaBurnEffects();
+    if (this.player.isDead()) {
+      this.handlePlayerDeath();
+      return;
+    }
+
     // Clean up dead monsters
-    this.monsters = this.monsters.filter(m => !m.isDead());
+    this.monsters = this.monsters.filter((m) => !m.isDead());
     
     // Only process monster turns in dungeons
     if (this.currentFloor === 0) {
@@ -1325,8 +1395,19 @@ export class GameScene extends Phaser.Scene {
       return;
     }
     
-    // Let monsters act
-    for (const monster of this.monsters) {
+    const friendlySummons = this.monsters.filter((monster) => monster.isFriendlySummon && !monster.isDead());
+    const hostileMonsters = this.monsters.filter((monster) => !monster.isFriendlySummon && !monster.isDead());
+
+    for (const companion of friendlySummons) {
+      this.executeFriendlyCompanionTurn(companion);
+      if (this.player.isDead()) {
+        this.handlePlayerDeath();
+        return;
+      }
+    }
+
+    // Let hostile monsters act
+    for (const monster of hostileMonsters) {
       if (monster.isDead()) continue;
 
       this.triggerMonsterPhaseIfNeeded(monster);
@@ -1430,6 +1511,7 @@ export class GameScene extends Phaser.Scene {
         }
         case 'damage_player': {
           const damage = this.player.takeDamage(effect.amount);
+          this.noteDeathCauseIfPlayerDead(`Slain by ${monster.name}'s ${phase.abilityName}`);
           if (damage > 0) {
             this.messageLog.addMessage(
               `${monster.name}'s ${phase.abilityName} hits you for ${damage} damage!`,
@@ -1491,6 +1573,13 @@ export class GameScene extends Phaser.Scene {
     const events = this.player.processStatusEffects();
     for (const event of events) {
       this.logPlayerStatusEvent(event);
+      if (event.kind === 'damage' && event.amount > 0) {
+        if (event.type === 'poison') {
+          this.noteDeathCauseIfPlayerDead('Succumbed to poison');
+        } else if (event.type === 'curse_wither') {
+          this.noteDeathCauseIfPlayerDead('Withered by a curse');
+        }
+      }
     }
   }
 
@@ -1864,7 +1953,7 @@ export class GameScene extends Phaser.Scene {
       return;
     }
 
-    const livingMonsters = this.monsters.filter((monster) => !monster.isDead());
+    const livingMonsters = this.monsters.filter((monster) => !monster.isDead() && !monster.isFriendlySummon);
     if (livingMonsters.length > 0) {
       return;
     }
@@ -1874,14 +1963,146 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
+  private recordPlayerDamageDealt(amount: number): void {
+    if (amount <= 0) {
+      return;
+    }
+    this.runAnalytics.damageDealt += amount;
+  }
+
+  private recordHostileKill(monster: Monster): void {
+    if (monster.isFriendlySummon) {
+      return;
+    }
+    this.runAnalytics.kills += 1;
+  }
+
+  private noteDeathCauseIfPlayerDead(cause: string): void {
+    if (!this.player.isDead()) {
+      return;
+    }
+    this.runAnalytics.causeOfDeath = cause;
+  }
+
+  private handleHostileMonsterDeath(monster: Monster, awardXP: boolean): void {
+    this.recordHostileKill(monster);
+    this.combatSystem.handleDeath(monster, this.gameMap);
+    this.gameMap.removeEntity(monster);
+    this.monsterAISystem.cleanupMonster(monster);
+    if (awardXP && monster.xpReward) {
+      this.awardPlayerXP(monster.xpReward);
+    }
+  }
+
+  private resolvePlayerMeleeAttack(defender: Monster) {
+    const result = this.combatSystem.meleeAttack(this.player, defender);
+    this.applyTreeCoverMitigation(defender, result.damage);
+    return result;
+  }
+
+  private resolveMonsterMeleeAttack(attacker: Monster) {
+    const result = this.combatSystem.meleeAttack(attacker, this.player);
+    this.applyTreeCoverMitigation(this.player, result.damage);
+    return result;
+  }
+
+  private resolveMonsterRangedAttack(attacker: Monster, distance: number) {
+    const result = this.combatSystem.rangedAttack(attacker, this.player, distance);
+    this.applyTreeCoverMitigation(this.player, result.damage);
+    return result;
+  }
+
+  private resolveCompanionMeleeAttack(attacker: Monster, defender: Monster) {
+    const result = this.combatSystem.meleeAttack(attacker, defender);
+    this.applyTreeCoverMitigation(defender, result.damage);
+    return result;
+  }
+
+  private applyTreeCoverMitigation(defender: Player | Monster, incomingDamage: number): void {
+    if (incomingDamage <= 0 || defender.isDead() || !this.hasAdjacentTreeCover(defender.x, defender.y)) {
+      return;
+    }
+
+    const prevented = Math.min(TREE_COVER_DAMAGE_REDUCTION, Math.max(0, incomingDamage - 1));
+    if (prevented <= 0) {
+      return;
+    }
+
+    defender.heal(prevented);
+    if (defender === this.player) {
+      this.messageLog.addMessage(`Tree cover blocks ${prevented} damage.`, MessageType.INFO);
+      return;
+    }
+    const tile = this.gameMap.getTile(defender.x, defender.y);
+    if (tile?.visible) {
+      this.messageLog.addMessage(`${defender.name} uses tree cover to block ${prevented} damage.`, MessageType.INFO);
+    }
+  }
+
+  private hasAdjacentTreeCover(x: number, y: number): boolean {
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        if (dx === 0 && dy === 0) {
+          continue;
+        }
+        const tile = this.gameMap.getTile(x + dx, y + dy);
+        if (tile?.type === TileType.TREE) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  private applyLavaBurnEffects(): void {
+    if (this.currentFloor <= 0) {
+      return;
+    }
+
+    const playerTile = this.gameMap.getTile(this.player.x, this.player.y);
+    if (playerTile?.type === TileType.LAVA) {
+      const damage = this.player.takeDamage(LAVA_BURN_DAMAGE);
+      this.messageLog.addMessage(`Lava burns you for ${damage} damage!`, MessageType.DAMAGE);
+      this.noteDeathCauseIfPlayerDead('Consumed by lava');
+    }
+
+    const monstersOnLava = this.monsters.filter((monster) => {
+      if (monster.isDead()) {
+        return false;
+      }
+      const tile = this.gameMap.getTile(monster.x, monster.y);
+      return tile?.type === TileType.LAVA;
+    });
+
+    for (const monster of monstersOnLava) {
+      const damage = monster.takeDamage(LAVA_BURN_DAMAGE);
+      const tile = this.gameMap.getTile(monster.x, monster.y);
+      if (tile?.visible) {
+        this.messageLog.addMessage(`${monster.name} is scorched by lava (${damage}).`, MessageType.DAMAGE);
+      }
+      if (!monster.isDead()) {
+        continue;
+      }
+      if (monster.isFriendlySummon) {
+        this.messageLog.addMessage(`${monster.name} is consumed by lava.`, MessageType.WARNING);
+      } else {
+        this.handleHostileMonsterDeath(monster, false);
+        continue;
+      }
+      this.gameMap.removeEntity(monster);
+      this.monsterAISystem.cleanupMonster(monster);
+    }
+  }
+
   private executeMonsterAction(
     monster: Monster,
     action: { type: ActionType; targetX?: number; targetY?: number; intent?: 'investigate' }
   ): void {
     switch (action.type) {
       case ActionType.MELEE_ATTACK: {
-        const result = this.combatSystem.meleeAttack(monster, this.player);
+        const result = this.resolveMonsterMeleeAttack(monster);
         this.messageLog.addMessage(result.message, MessageType.COMBAT);
+        this.noteDeathCauseIfPlayerDead(`Slain by ${monster.name}`);
         this.applyDurabilityWearOnPlayerDefense();
         this.emitMonsterNoise(monster, NOISE_BUDGET.MONSTER_MELEE, 'monster_melee');
         break;
@@ -1890,8 +2111,9 @@ export class GameScene extends Phaser.Scene {
         const dx = this.player.x - monster.x;
         const dy = this.player.y - monster.y;
         const distance = Math.sqrt(dx * dx + dy * dy);
-        const result = this.combatSystem.rangedAttack(monster, this.player, distance);
+        const result = this.resolveMonsterRangedAttack(monster, distance);
         this.messageLog.addMessage(result.message, MessageType.COMBAT);
+        this.noteDeathCauseIfPlayerDead(`Shot down by ${monster.name}`);
         this.applyDurabilityWearOnPlayerDefense();
         this.emitMonsterNoise(monster, NOISE_BUDGET.MONSTER_RANGED, 'monster_ranged');
         break;
@@ -1938,12 +2160,121 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
+  private executeFriendlyCompanionTurn(companion: Monster): void {
+    const nearestHostile = this.getNearestHostileMonster(companion);
+    if (nearestHostile) {
+      const dx = Math.abs(nearestHostile.x - companion.x);
+      const dy = Math.abs(nearestHostile.y - companion.y);
+      if (Math.max(dx, dy) <= 1) {
+        const result = this.resolveCompanionMeleeAttack(companion, nearestHostile);
+        this.recordPlayerDamageDealt(result.damage);
+        this.messageLog.addMessage(result.message, MessageType.COMBAT);
+        this.emitMonsterNoise(companion, NOISE_BUDGET.MONSTER_MELEE, 'companion_melee');
+        if (result.killed && nearestHostile.isDead()) {
+          this.handleHostileMonsterDeath(nearestHostile, true);
+        }
+        return;
+      }
+
+      const distance = Math.max(dx, dy);
+      if (distance <= COMPANION_MAX_CHASE_DISTANCE) {
+        if (this.tryMoveMonsterStepToward(companion, nearestHostile.x, nearestHostile.y)) {
+          this.emitMonsterNoise(companion, NOISE_BUDGET.MONSTER_MOVE, 'companion_move');
+        }
+        return;
+      }
+    }
+
+    const playerDistance = Math.max(Math.abs(this.player.x - companion.x), Math.abs(this.player.y - companion.y));
+    if (playerDistance > 2 && this.tryMoveMonsterStepToward(companion, this.player.x, this.player.y)) {
+      this.emitMonsterNoise(companion, NOISE_BUDGET.MONSTER_MOVE, 'companion_follow');
+    }
+  }
+
+  private getNearestHostileMonster(companion: Monster): Monster | null {
+    let nearest: Monster | null = null;
+    let nearestDistance = Number.POSITIVE_INFINITY;
+    for (const monster of this.monsters) {
+      if (monster.isDead() || monster.isFriendlySummon || monster === companion) {
+        continue;
+      }
+      const distance = Math.max(Math.abs(monster.x - companion.x), Math.abs(monster.y - companion.y));
+      if (distance < nearestDistance) {
+        nearestDistance = distance;
+        nearest = monster;
+      }
+    }
+    return nearest;
+  }
+
+  private tryMoveMonsterStepToward(monster: Monster, targetX: number, targetY: number): boolean {
+    const stepX = Math.sign(targetX - monster.x);
+    const stepY = Math.sign(targetY - monster.y);
+    const candidates: Array<{ x: number; y: number }> = [];
+
+    if (stepX !== 0 || stepY !== 0) {
+      candidates.push({ x: monster.x + stepX, y: monster.y + stepY });
+    }
+    if (stepX !== 0) {
+      candidates.push({ x: monster.x + stepX, y: monster.y });
+    }
+    if (stepY !== 0) {
+      candidates.push({ x: monster.x, y: monster.y + stepY });
+    }
+
+    for (const candidate of candidates) {
+      if (!this.canMonsterMoveTo(monster, candidate.x, candidate.y)) {
+        continue;
+      }
+      monster.setPosition(candidate.x, candidate.y);
+      return true;
+    }
+    return false;
+  }
+
+  private canMonsterMoveTo(monster: Monster | undefined, x: number, y: number): boolean {
+    if (!this.gameMap.isInBounds(x, y)) {
+      return false;
+    }
+
+    const tile = this.gameMap.getTile(x, y);
+    if (!tile || tile.blocked) {
+      return false;
+    }
+
+    if (this.player.x === x && this.player.y === y) {
+      return false;
+    }
+
+    const occupiedByMonster = this.monsters.some(
+      (other) => other !== monster && !other.isDead() && other.x === x && other.y === y
+    );
+    if (occupiedByMonster) {
+      return false;
+    }
+
+    const occupiedByNPC = this.npcs.some((npc) => npc.x === x && npc.y === y);
+    return !occupiedByNPC;
+  }
+
   private handlePlayerDeath(): void {
     this.messageLog.addMessage('You have died!', MessageType.COMBAT);
     console.log('Player died!');
+    if (this.runAnalytics.causeOfDeath === 'Unknown') {
+      this.runAnalytics.causeOfDeath = 'Fatal injuries';
+    }
     this.scene.start('GameOverScene', {
-      finalLevel: this.currentFloor,
-      finalXP: this.player.xp,
+      stats: {
+        level: this.player.level,
+        kills: this.runAnalytics.kills,
+        floorsReached: this.currentFloor,
+        depthReached: this.runAnalytics.maxDepthReached,
+        damageDealt: this.runAnalytics.damageDealt,
+        gold: Number(this.player.gold),
+        playerClass: this.player.playerClass,
+        cause: this.runAnalytics.causeOfDeath,
+        buildUsed: this.runAnalytics.buildUsed,
+      },
     });
   }
 
@@ -1976,13 +2307,36 @@ export class GameScene extends Phaser.Scene {
     this.scene.launch('InventoryScene', {
       player: this.player,
       gameMap: this.gameMap,
-      onInventoryChanged: (action?: 'equip' | 'unequip' | 'use' | 'drop') => {
+      onInventoryChanged: (action?: 'equip' | 'unequip' | 'use' | 'drop', context?: InventoryChangeContext) => {
+        if (
+          action === 'use' &&
+          context?.phase === 'before_use' &&
+          context.itemEffect === COMPANION_SUMMON_EFFECT_ID &&
+          context.itemId === COMPANION_SUMMON_ITEM_ID
+        ) {
+          return this.trySummonCompanion('item');
+        }
+        if (action === 'use' && context?.phase === 'before_use') {
+          return true;
+        }
+        if (
+          action === 'use' &&
+          context?.phase === 'after_use' &&
+          context.itemEffect === COMPANION_SUMMON_EFFECT_ID &&
+          context.itemId === COMPANION_SUMMON_ITEM_ID
+        ) {
+          this.emitPlayerNoise(this.player.x, this.player.y, NOISE_BUDGET.PLAYER_USE_ITEM, 'summon_companion_item');
+          this.processTurn();
+          return true;
+        }
+
         if (action === 'use') {
           this.emitPlayerNoise(this.player.x, this.player.y, NOISE_BUDGET.PLAYER_USE_ITEM, 'inventory_use');
         } else if (action === 'drop' || action === 'equip' || action === 'unequip') {
           this.emitPlayerNoise(this.player.x, this.player.y, NOISE_BUDGET.PLAYER_INTERACT, 'inventory_manage');
         }
         this.render();
+        return true;
       },
     });
     this.scene.pause('GameScene');
@@ -2072,6 +2426,9 @@ export class GameScene extends Phaser.Scene {
     corpseEdible?: boolean;
     corpseCooked?: boolean;
     corpseSeasoned?: boolean;
+    affixAttackBonus?: number;
+    affixCritChanceBonus?: number;
+    affixMagicResistBonus?: number;
   } {
     const itemDef = ITEMS.find((entry) => entry.id === item.id);
     const isPotentiallyMagicalEquipment =
@@ -2094,6 +2451,9 @@ export class GameScene extends Phaser.Scene {
       corpseEdible: item.corpseEdible,
       corpseCooked: item.corpseCooked,
       corpseSeasoned: item.corpseSeasoned,
+      affixAttackBonus: item.affixAttackBonus,
+      affixCritChanceBonus: item.affixCritChanceBonus,
+      affixMagicResistBonus: item.affixMagicResistBonus,
     };
     ensureDurability(inventoryItem, itemDef);
     return inventoryItem;
@@ -2404,6 +2764,189 @@ export class GameScene extends Phaser.Scene {
 
     this.emitPlayerNoise(this.player.x, this.player.y, NOISE_BUDGET.PLAYER_USE_ITEM, 'eat_corpse');
     this.processTurn();
+  }
+
+  private tryCastCompanionSpell(): void {
+    if (this.currentFloor <= 0) {
+      this.messageLog.addMessage('Your summoning magic only answers in the dungeon.', MessageType.SYSTEM);
+      this.render();
+      return;
+    }
+
+    if (!this.player.useMana(COMPANION_SPELL_MANA_COST)) {
+      this.messageLog.addMessage(
+        `Not enough mana to summon a companion (${COMPANION_SPELL_MANA_COST} MP needed).`,
+        MessageType.SYSTEM
+      );
+      this.render();
+      return;
+    }
+
+    if (!this.trySummonCompanion('spell')) {
+      this.player.restoreMana(COMPANION_SPELL_MANA_COST);
+      this.render();
+      return;
+    }
+
+    this.emitPlayerNoise(this.player.x, this.player.y, NOISE_BUDGET.PLAYER_USE_ITEM, 'summon_companion_spell');
+    this.processTurn();
+  }
+
+  private tryCastLightningBolt(): void {
+    if (this.currentFloor <= 0) {
+      this.messageLog.addMessage('Lightning casting is only available in the dungeon.', MessageType.SYSTEM);
+      this.render();
+      return;
+    }
+
+    const target = this.findNearestVisibleHostileMonster(this.player.x, this.player.y, LIGHTNING_SPELL_RANGE);
+    if (!target) {
+      this.messageLog.addMessage('No hostile target in sight for Lightning Bolt.', MessageType.SYSTEM);
+      this.render();
+      return;
+    }
+
+    const spell: Spell = {
+      name: 'Lightning Bolt',
+      manaCost: LIGHTNING_SPELL_MANA_COST,
+      spellPower: LIGHTNING_SPELL_POWER,
+      damageType: 'lightning',
+    };
+    const result = this.combatSystem.magicAttack(this.player, target, spell);
+    this.messageLog.addMessage(result.message, MessageType.COMBAT);
+    if (!result.hit) {
+      this.render();
+      return;
+    }
+    this.recordPlayerDamageDealt(result.damage);
+
+    let totalLightningDamage = result.damage;
+    if (!target.isDead() && this.isEntityOnWater(target)) {
+      const bonusDamage = Math.max(1, Math.floor(result.damage * (WATER_LIGHTNING_BONUS_MULTIPLIER - 1)));
+      const dealt = target.takeDamage(bonusDamage);
+      if (dealt > 0) {
+        this.messageLog.addMessage(`Water amplifies lightning for +${dealt} damage!`, MessageType.WARNING);
+        totalLightningDamage += dealt;
+        this.recordPlayerDamageDealt(dealt);
+      }
+    }
+
+    this.applyTreeCoverMitigation(target, totalLightningDamage);
+
+    if (target.isDead()) {
+      this.handleHostileMonsterDeath(target, true);
+    }
+
+    this.emitPlayerNoise(this.player.x, this.player.y, NOISE_BUDGET.PLAYER_RANGED, 'cast_lightning');
+    this.processTurn();
+  }
+
+  private findNearestVisibleHostileMonster(originX: number, originY: number, range: number): Monster | null {
+    let nearest: Monster | null = null;
+    let nearestDistance = Number.POSITIVE_INFINITY;
+    for (const monster of this.monsters) {
+      if (monster.isDead() || monster.isFriendlySummon) {
+        continue;
+      }
+      const tile = this.gameMap.getTile(monster.x, monster.y);
+      if (!tile?.visible) {
+        continue;
+      }
+      const distance = Math.sqrt((monster.x - originX) ** 2 + (monster.y - originY) ** 2);
+      if (distance > range || distance >= nearestDistance) {
+        continue;
+      }
+      nearest = monster;
+      nearestDistance = distance;
+    }
+    return nearest;
+  }
+
+  private isEntityOnWater(entity: Player | Monster): boolean {
+    const tile = this.gameMap.getTile(entity.x, entity.y);
+    return tile?.type === TileType.WATER;
+  }
+
+  private trySummonCompanion(source: 'item' | 'spell'): boolean {
+    if (this.currentFloor <= 0) {
+      this.messageLog.addMessage('Companions can only be summoned in the dungeon.', MessageType.SYSTEM);
+      return false;
+    }
+
+    const existing = this.getActiveCompanion();
+    if (existing) {
+      const nearby = this.findFreeAdjacentTile(this.player.x, this.player.y);
+      existing.currentHP = existing.maxHP;
+      if (nearby) {
+        existing.setPosition(nearby.x, nearby.y);
+      }
+      this.messageLog.addMessage(
+        source === 'spell'
+          ? `${existing.name} answers your call again.`
+          : `${existing.name} emerges from the scroll's sigil.`,
+        MessageType.INFO
+      );
+      return true;
+    }
+
+    const spawnPos = this.findFreeAdjacentTile(this.player.x, this.player.y);
+    if (!spawnPos) {
+      this.messageLog.addMessage('No open space nearby to summon a companion.', MessageType.SYSTEM);
+      return false;
+    }
+
+    const companion = new Monster(
+      spawnPos.x,
+      spawnPos.y,
+      COMPANION_NAME,
+      COMPANION_GLYPH,
+      COMPANION_COLOR,
+      COMPANION_STATS.maxHP,
+      COMPANION_STATS.attack,
+      COMPANION_STATS.defense,
+      COMPANION_STATS.speed,
+      AIBehavior.AGGRESSIVE,
+      0
+    );
+    companion.templateId = COMPANION_TEMPLATE_ID;
+    companion.isFriendlySummon = true;
+    companion.summonOwner = 'player';
+    companion.persistAcrossFloors = true;
+    companion.companionId = 'wolf';
+
+    this.monsters.push(companion);
+    this.gameMap.addEntity(companion);
+    this.messageLog.addMessage(
+      source === 'spell'
+        ? 'You weave mana into a loyal wolf companion.'
+        : 'The scroll manifests a loyal wolf companion.',
+      MessageType.INFO
+    );
+    return true;
+  }
+
+  private getActiveCompanion(): Monster | null {
+    return (
+      this.monsters.find(
+        (monster) => !monster.isDead() && monster.isFriendlySummon && monster.summonOwner === 'player'
+      ) ?? null
+    );
+  }
+
+  private findFreeAdjacentTile(centerX: number, centerY: number): { x: number; y: number } | null {
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        if (dx === 0 && dy === 0) {
+          continue;
+        }
+        const x = centerX + dx;
+        const y = centerY + dy;
+        if (this.canMonsterMoveTo(undefined, x, y)) {
+          return { x, y };
+        }
+      }
+    }
+    return null;
   }
 
   private tryMakeFire(): void {
@@ -2731,10 +3274,49 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  private enterDungeonFloor(targetFloor: number, entryStairType: TileType): void {
+  private detachPersistentCompanionForTransition(): Monster | null {
+    const companion = this.getActiveCompanion();
+    if (!companion || !companion.persistAcrossFloors) {
+      return null;
+    }
+    this.gameMap.removeEntity(companion);
+    this.monsters = this.monsters.filter((monster) => monster !== companion);
+    this.monsterAISystem.cleanupMonster(companion);
+    return companion;
+  }
+
+  private attachPersistentCompanionAfterTransition(companion: Monster | null): void {
+    if (!companion) {
+      return;
+    }
+
+    for (const existing of this.monsters.filter((monster) => monster.isFriendlySummon)) {
+      this.gameMap.removeEntity(existing);
+      this.monsterAISystem.cleanupMonster(existing);
+    }
+    this.monsters = this.monsters.filter((monster) => !monster.isFriendlySummon);
+
+    const spawnPos = this.findFreeAdjacentTile(this.player.x, this.player.y);
+    if (!spawnPos) {
+      this.messageLog.addMessage(`${companion.name} could not find a safe place on this floor.`, MessageType.WARNING);
+      return;
+    }
+
+    companion.setPosition(spawnPos.x, spawnPos.y);
+    this.monsters.push(companion);
+    this.gameMap.addEntity(companion);
+    this.messageLog.addMessage(`${companion.name} follows you to the next floor.`, MessageType.INFO);
+  }
+
+  private enterDungeonFloor(
+    targetFloor: number,
+    entryStairType: TileType.STAIRS_UP | TileType.STAIRS_DOWN,
+    carriedCompanion: Monster | null = null
+  ): void {
     const previousFloor = this.currentFloor;
     const previousMap = this.gameMap;
     this.currentFloor = targetFloor;
+    this.runAnalytics.maxDepthReached = Math.max(this.runAnalytics.maxDepthReached, targetFloor);
     this.noiseSystem.clear();
     const cachedState =
       this.dungeonGenerationMode === 'persistent' ? this.dungeonFloorStates.get(targetFloor) : undefined;
@@ -2765,6 +3347,7 @@ export class GameScene extends Phaser.Scene {
     const safeSpawn = this.findSafeSpawnNear(stairPos.x, stairPos.y, 10);
     this.player.setPosition(safeSpawn.x, safeSpawn.y);
     this.gameMap.addEntity(this.player);
+    this.attachPersistentCompanionAfterTransition(carriedCompanion);
 
     if (cachedState) {
       const respawned = this.monsterSpawnSystem.respawnNonBossMonstersToMinimum(
@@ -2811,11 +3394,12 @@ export class GameScene extends Phaser.Scene {
   private goDownStairs(): void {
     this.clearAltarPactOnFloorExit();
     this.closeAltarSelectionOverlay();
+    const carriedCompanion = this.detachPersistentCompanionForTransition();
     this.cacheCurrentDungeonFloorState();
     const targetFloor = this.currentFloor + 1;
     console.log('=== DESCENDING TO FLOOR', targetFloor, '===');
     this.messageLog.addMessage(`Descending to dungeon level ${targetFloor}...`, MessageType.SYSTEM);
-    this.enterDungeonFloor(targetFloor, TileType.STAIRS_UP);
+    this.enterDungeonFloor(targetFloor, TileType.STAIRS_UP, carriedCompanion);
     console.log('=== FLOOR', targetFloor, 'READY ===');
   }
 
@@ -2823,6 +3407,7 @@ export class GameScene extends Phaser.Scene {
     this.clearAltarPactOnFloorExit();
     this.closeAltarSelectionOverlay();
     if (this.currentFloor === 1) {
+      const carriedCompanion = this.detachPersistentCompanionForTransition();
       this.cacheCurrentDungeonFloorState();
       this.currentFloor = 0;
       console.log('=== RETURNING TO TOWN ===');
@@ -2858,6 +3443,12 @@ export class GameScene extends Phaser.Scene {
 
       this.player.setPosition(returnX, returnY);
       this.gameMap.addEntity(this.player);
+      if (carriedCompanion) {
+        this.messageLog.addMessage(
+          `${carriedCompanion.name} waits for you at the dungeon entrance.`,
+          MessageType.INFO
+        );
+      }
       
       // Town: Enable full visibility
       console.log('Town mode: enabling full visibility');
@@ -2873,11 +3464,12 @@ export class GameScene extends Phaser.Scene {
       
       this.render();
     } else if (this.currentFloor > 1) {
+      const carriedCompanion = this.detachPersistentCompanionForTransition();
       this.cacheCurrentDungeonFloorState();
       const targetFloor = this.currentFloor - 1;
       console.log('=== ASCENDING TO FLOOR', targetFloor, '===');
       this.messageLog.addMessage(`Ascending to dungeon level ${targetFloor}...`, MessageType.SYSTEM);
-      this.enterDungeonFloor(targetFloor, TileType.STAIRS_DOWN);
+      this.enterDungeonFloor(targetFloor, TileType.STAIRS_DOWN, carriedCompanion);
     }
   }
 
@@ -3008,7 +3600,8 @@ export class GameScene extends Phaser.Scene {
       const tile = this.gameMap.getTile(monster.x, monster.y);
       if (tile && tile.visible) {
         // Only render monsters that are currently visible
-        this.asciiRenderer.drawTile(monster.x, monster.y, monster.glyph, monster.color);
+        const drawColor = monster.isFriendlySummon ? COMPANION_COLOR : monster.color;
+        this.asciiRenderer.drawTile(monster.x, monster.y, monster.glyph, drawColor);
       }
     }
 
@@ -3034,7 +3627,7 @@ export class GameScene extends Phaser.Scene {
     this.asciiRenderer.drawText(
       1,
       1,
-      'Move: Arrows/WASD | G pickup | I inv | T talk | F drink | X disarm | R altar | </> stairs',
+      'Move: Arrows/WASD | G pickup | I inv | T talk | F drink | X disarm | R altar | V summon | L lightning | </> stairs',
       0xaaaaaa
     );
 

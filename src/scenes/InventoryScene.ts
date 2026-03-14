@@ -15,7 +15,10 @@ export class InventoryScene extends Phaser.Scene {
   private asciiRenderer!: ASCIIRenderer;
   private player!: Player;
   private gameMap!: GameMap;
-  private onInventoryChanged?: (action?: 'equip' | 'unequip' | 'use' | 'drop') => void;
+  private onInventoryChanged?: (
+    action?: 'equip' | 'unequip' | 'use' | 'drop',
+    context?: { itemId?: string; itemEffect?: string; phase?: 'before_use' | 'after_use' }
+  ) => boolean | void;
   private isVisible: boolean = false;
   private modalBackground!: ModalBackground;
 
@@ -57,7 +60,10 @@ export class InventoryScene extends Phaser.Scene {
   init(data: {
     player?: Player;
     gameMap?: GameMap;
-    onInventoryChanged?: (action?: 'equip' | 'unequip' | 'use' | 'drop') => void;
+    onInventoryChanged?: (
+      action?: 'equip' | 'unequip' | 'use' | 'drop',
+      context?: { itemId?: string; itemEffect?: string; phase?: 'before_use' | 'after_use' }
+    ) => boolean | void;
   }): void {
     if (data.player && data.gameMap) {
       this.player = data.player;
@@ -134,7 +140,10 @@ export class InventoryScene extends Phaser.Scene {
   public showInventory(
     player: Player,
     gameMap: GameMap,
-    onInventoryChanged?: (action?: 'equip' | 'unequip' | 'use' | 'drop') => void
+    onInventoryChanged?: (
+      action?: 'equip' | 'unequip' | 'use' | 'drop',
+      context?: { itemId?: string; itemEffect?: string; phase?: 'before_use' | 'after_use' }
+    ) => boolean | void
   ): void {
     this.player = player;
     this.gameMap = gameMap;
@@ -537,6 +546,7 @@ export class InventoryScene extends Phaser.Scene {
     }
 
     let applied = false;
+    let requiresExternalUseValidation = false;
     switch (itemDef.effect) {
       case 'restore_health':
         if (itemDef.type !== ItemType.POTION) {
@@ -571,20 +581,39 @@ export class InventoryScene extends Phaser.Scene {
       case 'enchant_weapon':
         applied = this.handleEnchantWeaponEffect();
         break;
+      case 'summon_companion':
+        applied = true;
+        requiresExternalUseValidation = true;
+        break;
     }
 
     if (!applied) {
       return;
     }
 
-    // Decrease quantity or remove item
-    if (item.quantity > 1) {
-      item.quantity--;
-    } else {
-      this.player.removeItem(item.id);
+    if (requiresExternalUseValidation) {
+      const allowed = this.onInventoryChanged?.('use', {
+        itemId: item.id,
+        itemEffect: itemDef.effect,
+        phase: 'before_use',
+      });
+      if (allowed !== true) {
+        return;
+      }
     }
 
-    this.onInventoryChanged?.('use');
+      // Decrease quantity or remove item
+      if (item.quantity > 1) {
+        item.quantity--;
+      } else {
+        this.player.removeItemInstance(item);
+      }
+
+    this.onInventoryChanged?.('use', {
+      itemId: item.id,
+      itemEffect: itemDef.effect,
+      phase: 'after_use',
+    });
     this.draw();
   }
 
@@ -598,7 +627,7 @@ export class InventoryScene extends Phaser.Scene {
 
     const item = this.player.inventory[this.selectedSlot];
     if (item) {
-      if (this.player.removeItem(item.id)) {
+      if (this.player.removeItemInstance(item)) {
         const droppedItem = this.createGroundItemFromInventoryItem(item);
         this.gameMap.addItem(droppedItem, this.player.x, this.player.y);
         this.onInventoryChanged?.('drop');
@@ -725,6 +754,9 @@ export class InventoryScene extends Phaser.Scene {
       corpseEdible: item.corpseEdible,
       corpseCooked: item.corpseCooked,
       corpseSeasoned: item.corpseSeasoned,
+      affixAttackBonus: item.affixAttackBonus,
+      affixCritChanceBonus: item.affixCritChanceBonus,
+      affixMagicResistBonus: item.affixMagicResistBonus,
       isGold: false,
     };
   }

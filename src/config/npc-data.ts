@@ -685,7 +685,7 @@ export const NPCS: NPCDefinition[] = [
         options: [],
       },
     ],
-    inventory: ['lockpick', 'lockpick_set', 'rope', 'torch', 'smoke_bomb'],
+    inventory: ['lockpick', 'lockpick_set', 'rope', 'torch', 'smoke_bomb', 'scroll_companion_call'],
   },
 
   // Hermit Zane - Lore and Side Quests

@@ -7,7 +7,6 @@ import { Entity } from '../entities/Entity';
 import { Player } from '../entities/player';
 import { Monster } from '../entities/monster';
 import { GameMap, Item } from '../world/map';
-import { ItemSpawnSystem } from './item-spawn-system';
 import { MessageLog, MessageType } from '../ui/message-log';
 
 /**
@@ -36,12 +35,13 @@ export interface Spell {
  * Handles all damage calculation and combat resolution
  */
 export class CombatSystem {
-  private itemSpawnSystem: ItemSpawnSystem;
   private messageLog: MessageLog;
+  private readonly BASE_CRIT_CHANCE = 0.1;
+  private readonly CRIT_DAMAGE_MULTIPLIER = 2;
 
   constructor(messageLog: MessageLog, seed?: number) {
     this.messageLog = messageLog;
-    this.itemSpawnSystem = new ItemSpawnSystem(seed);
+    void seed;
   }
 
   /**
@@ -61,9 +61,11 @@ export class CombatSystem {
     const baseDamage = Math.max(0, attackValue - defenseValue);
     const variance = Math.floor(Math.random() * 5) - 2; // -2 to +2
     const finalDamage = Math.max(1, baseDamage + variance);
+    const isCritical = this.rollCriticalHit(attacker);
+    const totalDamage = isCritical ? finalDamage * this.CRIT_DAMAGE_MULTIPLIER : finalDamage;
 
     // Apply damage
-    const actualDamage = defender.takeDamage(finalDamage);
+    const actualDamage = defender.takeDamage(totalDamage);
     const killed = defender.isDead();
 
     // Generate message with HP display
@@ -77,6 +79,10 @@ export class CombatSystem {
     } else {
       // Enemy attacking player - show player HP
       message = `${attackerName} hits you for ${actualDamage} damage! [HP: ${defender.currentHP}/${defender.maxHP}]`;
+    }
+
+    if (isCritical && !killed) {
+      message = `Critical hit! ${message}`;
     }
 
     if (killed) {
@@ -116,9 +122,11 @@ export class CombatSystem {
     // Apply distance penalty (damage falls off with range)
     const distanceFactor = Math.pow(0.9, Math.max(0, distance - 3));
     const finalDamage = Math.max(1, Math.floor((baseDamage + variance) * distanceFactor));
+    const isCritical = this.rollCriticalHit(attacker);
+    const totalDamage = isCritical ? finalDamage * this.CRIT_DAMAGE_MULTIPLIER : finalDamage;
 
     // Apply damage
-    const actualDamage = defender.takeDamage(finalDamage);
+    const actualDamage = defender.takeDamage(totalDamage);
     const killed = defender.isDead();
 
     // Generate message
@@ -134,6 +142,9 @@ export class CombatSystem {
 
     if (killed) {
       message += ` and killed it!`;
+    }
+    if (isCritical && !killed) {
+      message = `Critical hit! ${message}`;
     }
 
     // Log combat message
@@ -284,7 +295,20 @@ export class CombatSystem {
   private getMagicResistance(entity: Entity): number {
     // Default magic resistance is 0 (no resistance)
     // Can be extended to check for equipment or monster-specific resistance
+    if (entity instanceof Player) {
+      const bonus = entity.getMagicResistanceBonus() / 100;
+      return Math.max(0, Math.min(0.75, bonus));
+    }
     return 0;
+  }
+
+  private rollCriticalHit(attacker: Entity): boolean {
+    if (!(attacker instanceof Player)) {
+      return false;
+    }
+    const critChance = this.BASE_CRIT_CHANCE + attacker.getCriticalChanceBonus() / 100;
+    const normalizedChance = Math.max(0, Math.min(0.75, critChance));
+    return Math.random() < normalizedChance;
   }
 
   /**

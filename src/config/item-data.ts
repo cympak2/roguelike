@@ -465,6 +465,21 @@ const SCROLL_ENCHANT_ARMOR: Scroll = {
   uses: 1,
 };
 
+const SCROLL_COMPANION_CALL: Scroll = {
+  id: 'scroll_companion_call',
+  name: 'Scroll of Companion Call',
+  glyph: '~',
+  color: '#8AFFC1',
+  type: ItemType.SCROLL,
+  rarity: ItemRarity.RARE,
+  value: 175,
+  weight: 0.1,
+  stackable: true,
+  description: 'Summons a loyal wolf companion to aid you in battle.',
+  effect: 'summon_companion',
+  uses: 1,
+};
+
 // MISCELLANEOUS
 const GOLD: Item = {
   id: 'misc_gold',
@@ -735,6 +750,7 @@ export const ITEMS: ItemDefinition[] = [
   SCROLL_IDENTIFY,
   SCROLL_ENCHANT_WEAPON,
   SCROLL_ENCHANT_ARMOR,
+  SCROLL_COMPANION_CALL,
 
   // Miscellaneous
   GOLD,

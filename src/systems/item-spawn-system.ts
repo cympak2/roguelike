@@ -29,6 +29,13 @@ interface FloorSpawnConfig {
  */
 export class ItemSpawnSystem {
   private random: SeededRandom;
+  private readonly AFFIX_CHANCE_BY_RARITY: Record<ItemRarity, number> = {
+    [ItemRarity.COMMON]: 0.1,
+    [ItemRarity.UNCOMMON]: 0.2,
+    [ItemRarity.RARE]: 0.35,
+    [ItemRarity.EPIC]: 0.5,
+    [ItemRarity.LEGENDARY]: 0.65,
+  };
 
   constructor(seed?: number) {
     this.random = new SeededRandom(seed);
@@ -497,7 +504,7 @@ export class ItemSpawnSystem {
       [ItemType.MISCELLANEOUS]: 'misc',
     };
     
-    return {
+    const item: Item = {
       id: itemDef.id,
       name: itemDef.name,
       x,
@@ -510,6 +517,41 @@ export class ItemSpawnSystem {
       isGold: itemDef.id === 'misc_gold',
       goldAmount: itemDef.id === 'misc_gold' ? 1 : undefined,
     };
+
+    this.applyRandomAffix(item, itemDef);
+    return item;
+  }
+
+  private applyRandomAffix(item: Item, itemDef: ItemDefinition): void {
+    if (itemDef.type !== ItemType.WEAPON && itemDef.type !== ItemType.ARMOR) {
+      return;
+    }
+
+    const chance = this.AFFIX_CHANCE_BY_RARITY[itemDef.rarity] ?? 0;
+    if (!this.random.chance(chance)) {
+      return;
+    }
+
+    const candidates: Array<{ kind: 'atk' | 'crit' | 'resist'; value: number; label: string }> = [
+      { kind: 'atk', value: this.random.randomInt(1, 4), label: 'Might' },
+      { kind: 'crit', value: this.random.randomInt(5, 13), label: 'Precision' },
+      { kind: 'resist', value: this.random.randomInt(5, 16), label: 'Warding' },
+    ];
+    const selected = this.random.choice(candidates);
+    if (!selected) {
+      return;
+    }
+
+    item.name = `${item.name} of ${selected.label}`;
+    if (selected.kind === 'atk') {
+      item.affixAttackBonus = selected.value;
+      return;
+    }
+    if (selected.kind === 'crit') {
+      item.affixCritChanceBonus = selected.value;
+      return;
+    }
+    item.affixMagicResistBonus = selected.value;
   }
 
   /**

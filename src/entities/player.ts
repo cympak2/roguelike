@@ -36,6 +36,9 @@ export interface InventoryItem {
   corpseEdible?: boolean;
   corpseCooked?: boolean;
   corpseSeasoned?: boolean;
+  affixAttackBonus?: number;
+  affixCritChanceBonus?: number;
+  affixMagicResistBonus?: number;
 }
 
 /**
@@ -312,6 +315,15 @@ export class Player extends Entity {
     return false;
   }
 
+  removeItemInstance(item: InventoryItem): boolean {
+    const index = this.inventory.indexOf(item);
+    if (index > -1) {
+      this.inventory.splice(index, 1);
+      return true;
+    }
+    return false;
+  }
+
   /**
    * Get item from inventory by ID
    * @param itemId - Item ID
@@ -440,7 +452,7 @@ export class Player extends Entity {
    * @returns Total attack value
    */
   getTotalAttack(): number {
-    return this.attack + EquipmentSystem.getAttackBonus(this);
+    return this.attack + EquipmentSystem.getAttackBonus(this) + this.getAffixAttackBonus();
   }
 
   /**
@@ -449,6 +461,30 @@ export class Player extends Entity {
    */
   getTotalDefense(): number {
     return this.defense + EquipmentSystem.getDefenseBonus(this);
+  }
+
+  getCriticalChanceBonus(): number {
+    return this.getEquippedAffixSum('affixCritChanceBonus');
+  }
+
+  getMagicResistanceBonus(): number {
+    return this.getEquippedAffixSum('affixMagicResistBonus');
+  }
+
+  private getAffixAttackBonus(): number {
+    return this.getEquippedAffixSum('affixAttackBonus');
+  }
+
+  private getEquippedAffixSum(
+    key: 'affixAttackBonus' | 'affixCritChanceBonus' | 'affixMagicResistBonus'
+  ): number {
+    const slots: Array<InventoryItem | undefined> = [
+      this.equipment.weapon,
+      this.equipment.armor,
+      this.equipment.shield,
+      this.equipment.accessory,
+    ];
+    return slots.reduce((sum, item) => sum + (item?.[key] ?? 0), 0);
   }
 
   // ============================================================================

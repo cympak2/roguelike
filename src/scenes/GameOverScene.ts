@@ -12,9 +12,12 @@ export interface GameOverStats {
   level: number;
   kills: number;
   floorsReached: number;
+  depthReached: number;
+  damageDealt: number;
   gold: number;
   playerClass: string;
   cause?: string;
+  buildUsed?: string;
 }
 
 export class GameOverScene extends Phaser.Scene {
@@ -33,9 +36,12 @@ export class GameOverScene extends Phaser.Scene {
       level: 1,
       kills: 0,
       floorsReached: 0,
+      depthReached: 0,
+      damageDealt: 0,
       gold: 0,
       playerClass: 'Warrior',
-      cause: 'Unknown'
+      cause: 'Unknown',
+      buildUsed: 'rogue@0.0.0 (unknown)',
     };
     console.log('GameOverScene initialized with stats:', this.stats);
   }
@@ -116,6 +122,12 @@ export class GameOverScene extends Phaser.Scene {
       this.asciiRenderer.drawText(causeX, causeY + 1, causeText, COLORS.HEALTH);
     }
 
+    if (this.stats?.buildUsed) {
+      const buildText = `Build: ${this.stats.buildUsed}`;
+      const buildX = Math.floor((80 - buildText.length) / 2);
+      this.asciiRenderer.drawText(buildX, 32, buildText.substring(0, 78), COLORS.SHADOW);
+    }
+
     // Draw controls at bottom
     this.drawControls();
   }
@@ -126,7 +138,7 @@ export class GameOverScene extends Phaser.Scene {
     const statsX = 20;
 
     // Draw stats box
-    this.asciiRenderer.drawBox(15, 16, 50, 11, COLORS.ACCENT);
+    this.asciiRenderer.drawBox(15, 16, 50, 13, COLORS.ACCENT);
 
     // Title
     const titleText = 'FINAL STATISTICS';
@@ -135,7 +147,6 @@ export class GameOverScene extends Phaser.Scene {
 
     // Stats display with proper alignment
     const leftCol = statsX;
-    const rightCol = statsX + 25;
     let currentY = statsY + 2;
 
     // Class
@@ -156,6 +167,16 @@ export class GameOverScene extends Phaser.Scene {
     // Floors
     this.asciiRenderer.drawText(leftCol, currentY, 'Floors Explored:', COLORS.TEXT);
     this.asciiRenderer.drawText(leftCol + 15, currentY, String(stats.floorsReached), COLORS.MANA);
+    currentY++;
+
+    // Max depth
+    this.asciiRenderer.drawText(leftCol, currentY, 'Max Depth:', COLORS.TEXT);
+    this.asciiRenderer.drawText(leftCol + 15, currentY, String(stats.depthReached), COLORS.MANA);
+    currentY++;
+
+    // Damage dealt
+    this.asciiRenderer.drawText(leftCol, currentY, 'Damage Dealt:', COLORS.TEXT);
+    this.asciiRenderer.drawText(leftCol + 15, currentY, String(stats.damageDealt), COLORS.HEALTH);
     currentY++;
 
     // Gold

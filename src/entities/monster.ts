@@ -59,6 +59,14 @@ export class Monster extends Entity {
   noiseInvestigationTurnsRemaining: number;
   /** Minimum perceived loudness required to react */
   hearingThreshold: number;
+  /** True when this monster is a player-friendly summoned ally */
+  isFriendlySummon: boolean;
+  /** Summon owner identifier */
+  summonOwner: 'player' | null;
+  /** Whether this summon should follow across floor transitions */
+  persistAcrossFloors: boolean;
+  /** Optional identifier for summon archetype */
+  companionId?: string;
 
   // ============================================================================
   // LOOT PROPERTIES
@@ -111,6 +119,10 @@ export class Monster extends Entity {
     this.lastHeardNoisePos = null;
     this.noiseInvestigationTurnsRemaining = 0;
     this.hearingThreshold = 1;
+    this.isFriendlySummon = false;
+    this.summonOwner = null;
+    this.persistAcrossFloors = false;
+    this.companionId = undefined;
   }
 
   // ============================================================================

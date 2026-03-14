@@ -109,7 +109,7 @@ export class MonsterSpawnSystem {
   ): Monster[] {
     const minMonsters = this.getSpawnConfigForFloor(floorNumber).minMonsters;
     const livingNonBoss = existingMonsters.filter(
-      (monster) => !monster.isDead() && monster.templateId !== 'lich_king'
+      (monster) => !monster.isDead() && !monster.isFriendlySummon && monster.templateId !== 'lich_king'
     );
     const needed = Math.max(0, minMonsters - livingNonBoss.length);
     if (needed === 0) {

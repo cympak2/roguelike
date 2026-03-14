@@ -99,6 +99,9 @@ export interface Item {
   corpseEdible?: boolean;
   corpseCooked?: boolean;
   corpseSeasoned?: boolean;
+  affixAttackBonus?: number;
+  affixCritChanceBonus?: number;
+  affixMagicResistBonus?: number;
   isGold?: boolean;
   goldAmount?: number;
 }
@@ -326,8 +329,6 @@ export class GameMap {
   private getDefaultBlocked(type: TileType): boolean {
     switch (type) {
       case TileType.WALL:
-      case TileType.WATER:
-      case TileType.LAVA:
       case TileType.STONE:
       case TileType.TREE:
       case TileType.CHEST_CLOSED:
