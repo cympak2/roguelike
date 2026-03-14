@@ -103,6 +103,11 @@ export class DialogueScene extends Phaser.Scene {
       return;
     }
 
+    if (this.isDialogueTerminal(this.currentDialogue)) {
+      this.hideDialogue();
+      return;
+    }
+
     // Show the background rectangle
     this.modalBackground.show();
     this.resetDialogueScroll();
@@ -250,6 +255,11 @@ export class DialogueScene extends Phaser.Scene {
           // Dialogue ended
           this.hideDialogue();
         } else {
+          if (this.isDialogueTerminal(this.currentDialogue)) {
+            this.hideDialogue();
+            return;
+          }
+
           // Reset selection for new dialogue
           this.selectedOptionIndex = 0;
           this.resetDialogueScroll();
@@ -313,6 +323,14 @@ export class DialogueScene extends Phaser.Scene {
         console.log('Dialogue action:', action);
         break;
     }
+  }
+
+  private isDialogueTerminal(dialogue: DialogueNode): boolean {
+    if (dialogue.id === 'end') {
+      return true;
+    }
+
+    return dialogue.options.length === 0 && dialogue.text.trim().length === 0;
   }
 
   /**

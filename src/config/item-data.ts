@@ -570,6 +570,110 @@ const SMOKE_BOMB: Item = {
   description: 'Creates a cloud of smoke for quick escapes.',
 };
 
+const RAT_TAIL: Item = {
+  id: 'misc_rat_tail',
+  name: 'Rat Tail',
+  glyph: ',',
+  color: '#8B5A2B',
+  type: ItemType.MISCELLANEOUS,
+  rarity: ItemRarity.COMMON,
+  value: 6,
+  weight: 0.1,
+  stackable: true,
+  description: 'A stringy tail often used in low-grade alchemy.',
+};
+
+const BONE_FRAGMENT: Item = {
+  id: 'misc_bone_fragment',
+  name: 'Bone Fragment',
+  glyph: ':',
+  color: '#D8D0C0',
+  type: ItemType.MISCELLANEOUS,
+  rarity: ItemRarity.COMMON,
+  value: 8,
+  weight: 0.2,
+  stackable: true,
+  description: 'Splintered bone suitable for reinforcing light gear.',
+};
+
+const STOLEN_RING: Item = {
+  id: 'misc_stolen_ring',
+  name: 'Stolen Ring',
+  glyph: 'o',
+  color: '#E6C200',
+  type: ItemType.MISCELLANEOUS,
+  rarity: ItemRarity.UNCOMMON,
+  value: 30,
+  weight: 0.05,
+  stackable: true,
+  description: 'A tarnished ring infused with lingering magical residue.',
+};
+
+const SPIDER_SILK: Item = {
+  id: 'misc_spider_silk',
+  name: 'Spider Silk',
+  glyph: '~',
+  color: '#F5F5F5',
+  type: ItemType.MISCELLANEOUS,
+  rarity: ItemRarity.UNCOMMON,
+  value: 18,
+  weight: 0.1,
+  stackable: true,
+  description: 'Strong, flexible strands prized by tailors and fletchers.',
+};
+
+const POISON_FANG: Item = {
+  id: 'misc_poison_fang',
+  name: 'Poison Fang',
+  glyph: 'v',
+  color: '#7CFC00',
+  type: ItemType.MISCELLANEOUS,
+  rarity: ItemRarity.UNCOMMON,
+  value: 24,
+  weight: 0.1,
+  stackable: true,
+  description: 'A venomous fang used for toxins and anti-venom compounds.',
+};
+
+const TROLL_HIDE: Item = {
+  id: 'misc_troll_hide',
+  name: 'Troll Hide',
+  glyph: '%',
+  color: '#556B2F',
+  type: ItemType.MISCELLANEOUS,
+  rarity: ItemRarity.UNCOMMON,
+  value: 35,
+  weight: 1.5,
+  stackable: true,
+  description: 'Thick, durable hide ideal for heavy-duty armor work.',
+};
+
+const SOUL_FRAGMENT: Item = {
+  id: 'misc_soul_fragment',
+  name: 'Soul Fragment',
+  glyph: '*',
+  color: '#9370DB',
+  type: ItemType.MISCELLANEOUS,
+  rarity: ItemRarity.RARE,
+  value: 55,
+  weight: 0.1,
+  stackable: true,
+  description: 'A shimmering shard of spirit essence with arcane potential.',
+};
+
+const XP_CRYSTAL: Item = {
+  id: 'misc_xp_crystal',
+  name: 'XP Crystal',
+  glyph: '*',
+  color: '#00E5FF',
+  type: ItemType.MISCELLANEOUS,
+  rarity: ItemRarity.RARE,
+  value: 60,
+  weight: 0.15,
+  stackable: true,
+  description: 'A condensed crystal of arcane energy from dungeon anomalies.',
+};
+
 // ============================================================================
 // ITEM COLLECTION
 // ============================================================================
@@ -615,6 +719,14 @@ export const ITEMS: ItemDefinition[] = [
   ROPE,
   TORCH,
   SMOKE_BOMB,
+  RAT_TAIL,
+  BONE_FRAGMENT,
+  STOLEN_RING,
+  SPIDER_SILK,
+  POISON_FANG,
+  TROLL_HIDE,
+  SOUL_FRAGMENT,
+  XP_CRYSTAL,
 ];
 
 export const ITEM_DATA = {

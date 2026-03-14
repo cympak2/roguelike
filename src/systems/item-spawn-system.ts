@@ -448,25 +448,25 @@ export class ItemSpawnSystem {
     // Map them to actual item IDs from item-data.ts
     const itemIdMap: Record<string, string> = {
       'gold_coin': 'misc_gold',
-      'rat_tail': 'misc_ration', // Placeholder
-      'bone_fragment': 'misc_ration', // Placeholder
+      'rat_tail': 'misc_rat_tail',
+      'bone_fragment': 'misc_bone_fragment',
       'worn_dagger': 'weapon_dagger',
       'small_potion': 'potion_health',
-      'stolen_ring': 'misc_ration', // Placeholder
+      'stolen_ring': 'misc_stolen_ring',
       'iron_sword': 'weapon_short_sword',
       'leather_armor': 'armor_leather',
       'spell_scroll': 'scroll_identify',
       'enchanted_robe': 'armor_robe',
       'mana_crystal': 'potion_mana',
-      'spider_silk': 'misc_ration', // Placeholder
-      'poison_fang': 'misc_ration', // Placeholder
+      'spider_silk': 'misc_spider_silk',
+      'poison_fang': 'misc_poison_fang',
       'antidote': 'potion_cure_poison',
-      'troll_hide': 'misc_ration', // Placeholder
+      'troll_hide': 'misc_troll_hide',
       'great_club': 'weapon_battle_axe',
       'regeneration_potion': 'potion_health',
-      'soul_fragment': 'misc_ration', // Placeholder
+      'soul_fragment': 'misc_soul_fragment',
       'ghostly_amulet': 'armor_cloak',
-      'xp_crystal': 'misc_ration', // Placeholder
+      'xp_crystal': 'misc_xp_crystal',
       'dragon_scale': 'armor_plate',
       'dragon_fang': 'weapon_spear',
       'dragonscale_armor': 'armor_plate',

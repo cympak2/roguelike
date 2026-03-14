@@ -157,6 +157,7 @@ export const NPCS: NPCDefinition[] = [
           { text: 'Show me your weapons.', action: '', nextDialogueId: 'shop_weapons' },
           { text: 'What armor do you have?', action: '', nextDialogueId: 'shop_armor' },
           { text: 'Can you repair my equipment?', action: '', nextDialogueId: 'repair_service' },
+          { text: 'Can you craft with monster materials?', action: '', nextDialogueId: 'crafting_service' },
           { text: 'Tell me about your craft.', action: '', nextDialogueId: 'about_craft' },
           { text: 'Just browsing.', action: '', nextDialogueId: 'farewell' },
         ],
@@ -275,7 +276,20 @@ export const NPCS: NPCDefinition[] = [
         text: 'Dedication is what separates a blacksmith from someone who just pounds metal. Now, was there something you needed, or are you just here for conversation?',
         options: [
           { text: 'Show me what you have for sale.', action: '', nextDialogueId: 'start' },
+          { text: 'Can you craft with my materials?', action: '', nextDialogueId: 'crafting_service' },
           { text: 'Just wanted to talk. Farewell.', action: '', nextDialogueId: 'farewell' },
+        ],
+      },
+      {
+        id: 'crafting_service',
+        text: 'Now this is my favorite work. Bring me dungeon scraps and I will forge something useful. Pick a pattern and I will get to work.',
+        options: [
+          { text: 'Weave a Venomcloak (Spider Silk x3, Poison Fang x1).', action: 'craft_venomcloak', nextDialogueId: 'crafting_service' },
+          { text: 'Forge Bonebound Mail (Troll Hide x2, Bone Fragment x2).', action: 'craft_bonebound_mail', nextDialogueId: 'crafting_service' },
+          { text: 'Bind a Soul Lens (Soul Fragment x1, XP Crystal x1).', action: 'craft_soul_lens', nextDialogueId: 'crafting_service' },
+          { text: 'Imprint an Enchanting Sigil (Stolen Ring x1, XP Crystal x2).', action: 'craft_enchanting_sigil', nextDialogueId: 'crafting_service' },
+          { text: 'Brew Antivenom Pack (Rat Tail x2, Poison Fang x1, Bone Fragment x1).', action: 'craft_antivenom_pack', nextDialogueId: 'crafting_service' },
+          { text: 'Maybe another time.', action: '', nextDialogueId: 'start' },
         ],
       },
       {

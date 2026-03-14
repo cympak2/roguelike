@@ -2,7 +2,7 @@ import { defineConfig } from 'vite';
 
 export default defineConfig({
   plugins: [
-    {
+   /*  {
       name: 'request-logger',
       configureServer(server) {
         server.middlewares.use((req, _res, next) => {
@@ -10,7 +10,7 @@ export default defineConfig({
           next();
         });
       },
-    },
+    }, */
   ],
   server: {
     port: 5173,

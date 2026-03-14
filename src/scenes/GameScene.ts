@@ -18,7 +18,7 @@ import { CombatSystem } from '../systems/combat-system';
 import { MonsterSpawnSystem } from '../systems/monster-spawn-system';
 import { ItemSpawnSystem } from '../systems/item-spawn-system';
 import { MonsterAISystem, ActionType } from '../systems/monster-ai-system';
-import { ITEMS, ItemType } from '../config/item-data';
+import { ITEMS, ItemType, type ItemDefinition } from '../config/item-data';
 
 interface QuestDefinition {
   id: string;
@@ -54,6 +54,18 @@ interface ActiveAltarPact {
   boon: AltarEffect;
   curse: AltarEffect;
   appliedDelta: AltarStatDelta;
+}
+
+interface CraftingIngredient {
+  itemId: string;
+  quantity: number;
+}
+
+interface BlacksmithRecipe {
+  ingredients: CraftingIngredient[];
+  resultItemId: string;
+  resultQuantity?: number;
+  successMessage: string;
 }
 
 const ALTAR_BOONS: AltarEffect[] = [
@@ -118,6 +130,50 @@ const QUEST_DEFINITIONS: Record<string, QuestDefinition> = {
   },
 };
 const HEAL_PLAYER_COST = 0;
+const BLACKSMITH_RECIPES: Record<string, BlacksmithRecipe> = {
+  craft_venomcloak: {
+    ingredients: [
+      { itemId: 'misc_spider_silk', quantity: 3 },
+      { itemId: 'misc_poison_fang', quantity: 1 },
+    ],
+    resultItemId: 'armor_cloak',
+    successMessage: 'Hilda weaves a Venomcloak from your materials.',
+  },
+  craft_bonebound_mail: {
+    ingredients: [
+      { itemId: 'misc_troll_hide', quantity: 2 },
+      { itemId: 'misc_bone_fragment', quantity: 2 },
+    ],
+    resultItemId: 'armor_chain_mail',
+    successMessage: 'Hilda reforges the scraps into sturdy Bonebound Mail.',
+  },
+  craft_soul_lens: {
+    ingredients: [
+      { itemId: 'misc_soul_fragment', quantity: 1 },
+      { itemId: 'misc_xp_crystal', quantity: 1 },
+    ],
+    resultItemId: 'scroll_identify',
+    successMessage: 'Hilda stabilizes the essence into a Scroll of Identify.',
+  },
+  craft_enchanting_sigil: {
+    ingredients: [
+      { itemId: 'misc_stolen_ring', quantity: 1 },
+      { itemId: 'misc_xp_crystal', quantity: 2 },
+    ],
+    resultItemId: 'scroll_enchant_weapon',
+    successMessage: 'Hilda etches an Enchant Weapon scroll from your arcane salvage.',
+  },
+  craft_antivenom_pack: {
+    ingredients: [
+      { itemId: 'misc_rat_tail', quantity: 2 },
+      { itemId: 'misc_poison_fang', quantity: 1 },
+      { itemId: 'misc_bone_fragment', quantity: 1 },
+    ],
+    resultItemId: 'potion_cure_poison',
+    resultQuantity: 2,
+    successMessage: 'Hilda compounds your reagents into an antivenom pack.',
+  },
+};
 
 export class GameScene extends Phaser.Scene {
   private asciiRenderer!: ASCIIRenderer;
@@ -1167,6 +1223,11 @@ export class GameScene extends Phaser.Scene {
       return;
     }
 
+    if (payload.action.startsWith('craft_')) {
+      this.applyBlacksmithCrafting(payload.action);
+      return;
+    }
+
     if (payload.action !== 'accept_quest') {
       return;
     }
@@ -1225,6 +1286,137 @@ export class GameScene extends Phaser.Scene {
     }
 
     this.render();
+  }
+
+  private applyBlacksmithCrafting(actionId: string): void {
+    const recipe = BLACKSMITH_RECIPES[actionId];
+    if (!recipe) {
+      this.messageLog.addMessage('Hilda cannot craft that recipe.', MessageType.SYSTEM);
+      this.render();
+      return;
+    }
+
+    const resultDef = ITEMS.find((item) => item.id === recipe.resultItemId);
+    if (!resultDef) {
+      this.messageLog.addMessage('Crafting failed: invalid recipe result.', MessageType.SYSTEM);
+      this.render();
+      return;
+    }
+
+    const missing = this.getMissingCraftingIngredients(recipe);
+    if (missing.length > 0) {
+      this.messageLog.addMessage(`Missing materials: ${missing.join(', ')}.`, MessageType.SYSTEM);
+      this.render();
+      return;
+    }
+
+    const craftedItem = this.createInventoryItemFromDefinition(resultDef, recipe.resultQuantity ?? 1);
+    if (!this.player.canAddItem(craftedItem)) {
+      this.messageLog.addMessage('Inventory is full. Crafting cancelled.', MessageType.SYSTEM);
+      this.render();
+      return;
+    }
+
+    const consumed = this.consumeCraftingIngredients(recipe);
+    if (!consumed) {
+      this.messageLog.addMessage('Crafting failed: required materials were not found.', MessageType.SYSTEM);
+      this.render();
+      return;
+    }
+
+    const added = this.player.addItem(craftedItem);
+    if (!added) {
+      for (const ingredient of recipe.ingredients) {
+        const ingredientDef = ITEMS.find((item) => item.id === ingredient.itemId);
+        if (!ingredientDef) {
+          continue;
+        }
+        this.player.addItem(this.createInventoryItemFromDefinition(ingredientDef, ingredient.quantity));
+      }
+      this.messageLog.addMessage('Crafting failed: inventory changed unexpectedly.', MessageType.SYSTEM);
+      this.render();
+      return;
+    }
+
+    this.messageLog.addMessage(recipe.successMessage, MessageType.ITEM_DROP);
+    this.render();
+  }
+
+  private getMissingCraftingIngredients(recipe: BlacksmithRecipe): string[] {
+    const missing: string[] = [];
+
+    for (const ingredient of recipe.ingredients) {
+      const have = this.getInventoryQuantity(ingredient.itemId);
+      if (have >= ingredient.quantity) {
+        continue;
+      }
+
+      const itemName = ITEMS.find((item) => item.id === ingredient.itemId)?.name ?? ingredient.itemId;
+      missing.push(`${itemName} x${ingredient.quantity - have}`);
+    }
+
+    return missing;
+  }
+
+  private consumeCraftingIngredients(recipe: BlacksmithRecipe): boolean {
+    for (const ingredient of recipe.ingredients) {
+      const entry = this.player.inventory.find((item) => item.id === ingredient.itemId);
+      if (!entry || entry.quantity < ingredient.quantity) {
+        return false;
+      }
+    }
+
+    for (const ingredient of recipe.ingredients) {
+      const entry = this.player.inventory.find((item) => item.id === ingredient.itemId);
+      if (!entry) {
+        return false;
+      }
+
+      if (entry.quantity === ingredient.quantity) {
+        const index = this.player.inventory.indexOf(entry);
+        if (index !== -1) {
+          this.player.inventory.splice(index, 1);
+        }
+      } else {
+        entry.quantity -= ingredient.quantity;
+      }
+    }
+
+    return true;
+  }
+
+  private getInventoryQuantity(itemId: string): number {
+    const entry = this.player.inventory.find((item) => item.id === itemId);
+    return entry?.quantity ?? 0;
+  }
+
+  private createInventoryItemFromDefinition(
+    itemDef: ItemDefinition,
+    quantity: number
+  ): {
+    id: string;
+    name: string;
+    type: 'weapon' | 'armor' | 'potion' | 'misc';
+    quantity: number;
+    rarity: 'common' | 'uncommon' | 'rare' | 'epic' | 'legendary';
+    identified?: boolean;
+    enchantmentBonus?: number;
+  } {
+    return {
+      id: itemDef.id,
+      name: itemDef.name,
+      type: this.mapItemTypeToInventoryType(itemDef.type),
+      quantity,
+      rarity: itemDef.rarity,
+      identified: true,
+    };
+  }
+
+  private mapItemTypeToInventoryType(type: ItemType): 'weapon' | 'armor' | 'potion' | 'misc' {
+    if (type === ItemType.WEAPON) return 'weapon';
+    if (type === ItemType.ARMOR) return 'armor';
+    if (type === ItemType.POTION) return 'potion';
+    return 'misc';
   }
 
   private updateQuestProgress(): void {
