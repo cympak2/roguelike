@@ -51,6 +51,14 @@ export class Monster extends Entity {
   templateId: string;
   /** Optional conditional AI rules */
   aiRules?: MonsterAIRules;
+  /** One-time phase thresholds that have already triggered */
+  triggeredPhaseThresholds: Set<number>;
+  /** Last heard noise position used for investigation */
+  lastHeardNoisePos: { x: number; y: number } | null;
+  /** Remaining turns to keep investigating last heard noise */
+  noiseInvestigationTurnsRemaining: number;
+  /** Minimum perceived loudness required to react */
+  hearingThreshold: number;
 
   // ============================================================================
   // LOOT PROPERTIES
@@ -99,6 +107,10 @@ export class Monster extends Entity {
     this.templateId = '';
     this.xpReward = xpReward;
     this.lootDrops = [];
+    this.triggeredPhaseThresholds = new Set<number>();
+    this.lastHeardNoisePos = null;
+    this.noiseInvestigationTurnsRemaining = 0;
+    this.hearingThreshold = 1;
   }
 
   // ============================================================================

@@ -88,6 +88,7 @@ export class DungeonGenerator {
 
     // Place stairs
     this.placeStairs(map, floorNumber);
+    this.placeCampfires(map, leafRooms, floorNumber);
 
     // Place special features based on floor
     if (floorNumber >= 3) {
@@ -412,6 +413,49 @@ export class DungeonGenerator {
       const usableDownCandidates = downCandidates.length > 0 ? downCandidates : floorTiles;
       const downPos = this.pickFarthestTileFrom(usableDownCandidates, upPos);
       map.setTile(downPos.x, downPos.y, TileType.STAIRS_DOWN);
+    }
+  }
+
+  private placeCampfires(
+    map: GameMap,
+    rooms: Room[],
+    floorNumber: number
+  ): void {
+    if (rooms.length === 0) {
+      return;
+    }
+
+    const maxCampfires = floorNumber >= 7 ? 3 : floorNumber >= 4 ? 2 : 1;
+    const campfireCount = this.random.randomInt(1, maxCampfires);
+    const eligibleRooms = rooms.filter((room) => room.width >= 5 && room.height >= 5 && room.center);
+    if (eligibleRooms.length === 0) {
+      return;
+    }
+
+    for (let i = 0; i < campfireCount; i++) {
+      const room = eligibleRooms[this.random.randomInt(0, eligibleRooms.length - 1)];
+      if (!room?.center) {
+        continue;
+      }
+
+      const offsets = [
+        { dx: 0, dy: 0 },
+        { dx: 1, dy: 0 },
+        { dx: -1, dy: 0 },
+        { dx: 0, dy: 1 },
+        { dx: 0, dy: -1 },
+      ];
+
+      for (const offset of offsets) {
+        const x = room.center.x + offset.dx;
+        const y = room.center.y + offset.dy;
+        const tile = map.getTile(x, y);
+        if (!tile || tile.type !== TileType.FLOOR) {
+          continue;
+        }
+        map.setTile(x, y, TileType.CAMPFIRE, false, false);
+        break;
+      }
     }
   }
 

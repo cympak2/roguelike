@@ -25,6 +25,7 @@ export enum TileType {
   CHEST_OPEN = 'CHEST_OPEN',
   FOUNTAIN = 'FOUNTAIN',
   ALTAR = 'ALTAR',
+  CAMPFIRE = 'CAMPFIRE',
 }
 
 /**
@@ -93,6 +94,11 @@ export interface Item {
   enchantmentBonus?: number;
   currentDurability?: number;
   maxDurability?: number;
+  corpseSourceId?: string;
+  corpseCursed?: boolean;
+  corpseEdible?: boolean;
+  corpseCooked?: boolean;
+  corpseSeasoned?: boolean;
   isGold?: boolean;
   goldAmount?: number;
 }
@@ -367,6 +373,7 @@ export function getGlyph(tile: Tile): string {
     [TileType.CHEST_OPEN]: GLYPHS.CHEST_OPEN,
     [TileType.FOUNTAIN]: GLYPHS.FOUNTAIN,
     [TileType.ALTAR]: GLYPHS.ALTAR,
+    [TileType.CAMPFIRE]: '^',
   };
 
   return typeMap[tile.type] || GLYPHS.FLOOR;
@@ -424,6 +431,8 @@ function getTileBaseColor(type: TileType): number {
       return 0x00ccff;
     case TileType.ALTAR:
       return 0xff00ff;
+    case TileType.CAMPFIRE:
+      return 0xffee66;
     default:
       return COLORS.FLOOR;
   }

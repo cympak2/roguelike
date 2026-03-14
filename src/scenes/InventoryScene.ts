@@ -15,7 +15,7 @@ export class InventoryScene extends Phaser.Scene {
   private asciiRenderer!: ASCIIRenderer;
   private player!: Player;
   private gameMap!: GameMap;
-  private onInventoryChanged?: () => void;
+  private onInventoryChanged?: (action?: 'equip' | 'unequip' | 'use' | 'drop') => void;
   private isVisible: boolean = false;
   private modalBackground!: ModalBackground;
 
@@ -54,7 +54,11 @@ export class InventoryScene extends Phaser.Scene {
     super({ key: 'InventoryScene' });
   }
 
-  init(data: { player?: Player; gameMap?: GameMap; onInventoryChanged?: () => void }): void {
+  init(data: {
+    player?: Player;
+    gameMap?: GameMap;
+    onInventoryChanged?: (action?: 'equip' | 'unequip' | 'use' | 'drop') => void;
+  }): void {
     if (data.player && data.gameMap) {
       this.player = data.player;
       this.gameMap = data.gameMap;
@@ -127,7 +131,11 @@ export class InventoryScene extends Phaser.Scene {
    * Show inventory overlay for a player
    * @param player - The player whose inventory to display
    */
-  public showInventory(player: Player, gameMap: GameMap, onInventoryChanged?: () => void): void {
+  public showInventory(
+    player: Player,
+    gameMap: GameMap,
+    onInventoryChanged?: (action?: 'equip' | 'unequip' | 'use' | 'drop') => void
+  ): void {
     this.player = player;
     this.gameMap = gameMap;
     this.onInventoryChanged = onInventoryChanged;
@@ -480,7 +488,7 @@ export class InventoryScene extends Phaser.Scene {
 
       const unequipped = EquipmentSystem.unequipItem(this.player, slot);
       if (unequipped) {
-        this.onInventoryChanged?.();
+        this.onInventoryChanged?.('unequip');
         this.draw();
       }
       return;
@@ -498,7 +506,7 @@ export class InventoryScene extends Phaser.Scene {
     const success = EquipmentSystem.equipItem(this.player, item);
     
     if (success) {
-      this.onInventoryChanged?.();
+      this.onInventoryChanged?.('equip');
       this.draw();
     }
   }
@@ -576,7 +584,7 @@ export class InventoryScene extends Phaser.Scene {
       this.player.removeItem(item.id);
     }
 
-    this.onInventoryChanged?.();
+    this.onInventoryChanged?.('use');
     this.draw();
   }
 
@@ -593,7 +601,7 @@ export class InventoryScene extends Phaser.Scene {
       if (this.player.removeItem(item.id)) {
         const droppedItem = this.createGroundItemFromInventoryItem(item);
         this.gameMap.addItem(droppedItem, this.player.x, this.player.y);
-        this.onInventoryChanged?.();
+        this.onInventoryChanged?.('drop');
       }
     }
 
@@ -712,6 +720,11 @@ export class InventoryScene extends Phaser.Scene {
       enchantmentBonus: item.enchantmentBonus,
       currentDurability: item.currentDurability,
       maxDurability: item.maxDurability,
+      corpseSourceId: item.corpseSourceId,
+      corpseCursed: item.corpseCursed,
+      corpseEdible: item.corpseEdible,
+      corpseCooked: item.corpseCooked,
+      corpseSeasoned: item.corpseSeasoned,
       isGold: false,
     };
   }

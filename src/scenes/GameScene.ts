@@ -18,9 +18,11 @@ import { CombatSystem } from '../systems/combat-system';
 import { MonsterSpawnSystem } from '../systems/monster-spawn-system';
 import { ItemSpawnSystem } from '../systems/item-spawn-system';
 import { MonsterAISystem, ActionType } from '../systems/monster-ai-system';
+import { NoiseSystem } from '../systems/noise-system';
 import { ITEMS, ItemType, type ItemDefinition } from '../config/item-data';
+import { getMonsterTemplate, type MonsterPhaseDefinition } from '../config/monster-data';
 import { ensureDurability, getMissingDurability } from '../utils/durability';
-import type { PlayerStatusTickEvent } from '../types/status-effects';
+import type { PlayerStatusEffectType, PlayerStatusTickEvent } from '../types/status-effects';
 
 interface QuestDefinition {
   id: string;
@@ -68,6 +70,19 @@ interface BlacksmithRecipe {
   resultItemId: string;
   resultQuantity?: number;
   successMessage: string;
+}
+
+interface CorpseInventoryItem {
+  id: string;
+  name: string;
+  type: 'weapon' | 'armor' | 'potion' | 'misc';
+  quantity: number;
+  rarity: 'common' | 'uncommon' | 'rare' | 'epic' | 'legendary';
+  corpseSourceId?: string;
+  corpseCursed?: boolean;
+  corpseEdible?: boolean;
+  corpseCooked?: boolean;
+  corpseSeasoned?: boolean;
 }
 
 const ALTAR_BOONS: AltarEffect[] = [
@@ -133,6 +148,24 @@ const QUEST_DEFINITIONS: Record<string, QuestDefinition> = {
 };
 const HEAL_PLAYER_COST = 0;
 const REPAIR_COST_PER_DURABILITY = 1;
+const NOISE_BUDGET = {
+  PLAYER_MOVE: { loudness: 2, radius: 7 },
+  PLAYER_MELEE: { loudness: 7, radius: 14 },
+  PLAYER_RANGED: { loudness: 8, radius: 16 },
+  PLAYER_INTERACT: { loudness: 3, radius: 9 },
+  PLAYER_PICKUP: { loudness: 2, radius: 6 },
+  PLAYER_USE_ITEM: { loudness: 3, radius: 8 },
+  PLAYER_DOOR: { loudness: 4, radius: 10 },
+  PLAYER_TRAP: { loudness: 6, radius: 12 },
+  MONSTER_MOVE: { loudness: 2, radius: 6 },
+  MONSTER_MELEE: { loudness: 6, radius: 12 },
+  MONSTER_RANGED: { loudness: 7, radius: 14 },
+  MONSTER_SPECIAL: { loudness: 7, radius: 14 },
+} as const;
+const HIGH_NOISE_THRESHOLD = 6;
+const RAW_CORPSE_HEAL_RATIO = 0.15;
+const COOKED_CORPSE_HEAL_RATIO = 0.3;
+const SEASONED_BONUS_HEAL_RATIO = 0.12;
 const BLACKSMITH_RECIPES: Record<string, BlacksmithRecipe> = {
   craft_venomcloak: {
     ingredients: [
@@ -199,9 +232,13 @@ export class GameScene extends Phaser.Scene {
   private monsterSpawnSystem!: MonsterSpawnSystem;
   private itemSpawnSystem!: ItemSpawnSystem;
   private monsterAISystem!: MonsterAISystem;
+  private noiseSystem!: NoiseSystem;
   private pickupSelectionItems: GroundItem[] = [];
   private pickupSelectionIndex: number = 0;
   private pickupOverlay?: Phaser.GameObjects.Text;
+  private cookingSelectionItems: CorpseInventoryItem[] = [];
+  private cookingSelectionIndex: number = 0;
+  private cookingOverlay?: Phaser.GameObjects.Text;
   private altarSelectionIndex: number = 0;
   private altarOverlay?: Phaser.GameObjects.Text;
   private pendingAltarOffer?: { boon: AltarEffect; curse: AltarEffect };
@@ -272,7 +309,9 @@ export class GameScene extends Phaser.Scene {
     
     // Initialize message log
     this.messageLog = new MessageLog();
-    this.messageLog.addMessage(`Welcome, ${data.selectedClass?.name || 'Warrior'}! Use arrow keys or WASD to move. Use < and > on stairs.`);
+    this.messageLog.addMessage(
+      `Welcome, ${data.selectedClass?.name || 'Warrior'}! Move with arrows/WASD. E: eat corpse, C: cook near fire, M: make fire, </,: up stairs, >/.: down stairs.`
+    );
     
     console.log('Player created:', this.player.playerClass, 'at', this.player.x, this.player.y);
   }
@@ -292,6 +331,7 @@ export class GameScene extends Phaser.Scene {
     this.monsterSpawnSystem = new MonsterSpawnSystem();
     this.itemSpawnSystem = new ItemSpawnSystem();
     this.monsterAISystem = new MonsterAISystem();
+    this.noiseSystem = new NoiseSystem();
     console.log('Game systems initialized');
 
     // Use a global keydown listener so input can wake the game loop from idle sleep
@@ -356,6 +396,10 @@ export class GameScene extends Phaser.Scene {
       this.pickupOverlay.destroy();
       this.pickupOverlay = undefined;
     }
+    if (this.cookingOverlay) {
+      this.cookingOverlay.destroy();
+      this.cookingOverlay = undefined;
+    }
     if (this.altarOverlay) {
       this.altarOverlay.destroy();
       this.altarOverlay = undefined;
@@ -382,6 +426,11 @@ export class GameScene extends Phaser.Scene {
       event.preventDefault();
       return;
     }
+    if (this.isCookingSelectionActive()) {
+      this.handleCookingSelectionKey(event.key);
+      event.preventDefault();
+      return;
+    }
 
     const key = event.key.toLowerCase();
     const isHandledKey = (
@@ -400,6 +449,11 @@ export class GameScene extends Phaser.Scene {
       key === 'f' ||
       key === 'x' ||
       key === 'r' ||
+      key === 'c' ||
+      key === 'm' ||
+      key === 'e' ||
+      key === ',' ||
+      key === '.' ||
       key === '<' ||
       key === '>'
     );
@@ -509,10 +563,21 @@ export class GameScene extends Phaser.Scene {
       case 'r':
         this.tryUseAltar();
         return;
+      case 'c':
+        this.tryOpenCookingSelection();
+        return;
+      case 'm':
+        this.tryMakeFire();
+        return;
+      case 'e':
+        this.tryEatCorpse();
+        return;
       case '<':
+      case ',':
         this.tryUseStairs('up');
         return;
       case '>':
+      case '.':
         this.tryUseStairs('down');
         return;
       default:
@@ -548,6 +613,7 @@ export class GameScene extends Phaser.Scene {
         const result = this.combatSystem.meleeAttack(this.player, monster);
         this.messageLog.addMessage(result.message, MessageType.COMBAT);
         this.applyDurabilityWearOnPlayerAttack();
+        this.emitPlayerNoise(newX, newY, NOISE_BUDGET.PLAYER_MELEE, 'player_melee');
         
         // Handle monster death
           if (result.killed && monster.isDead()) {
@@ -572,6 +638,7 @@ export class GameScene extends Phaser.Scene {
         tile.type = TileType.DOOR_OPEN;
         tile.blocked = false;
         this.messageLog.addMessage('You open the door.', MessageType.SYSTEM);
+        this.emitPlayerNoise(newX, newY, NOISE_BUDGET.PLAYER_DOOR, 'open_door');
         console.log('Opened door at', newX, newY);
         this.render();
       } else if (tile && tile.type === TileType.CHEST_CLOSED) {
@@ -595,7 +662,17 @@ export class GameScene extends Phaser.Scene {
 
     // Move player
     this.player.setPosition(newX, newY);
+    this.emitPlayerNoise(newX, newY, NOISE_BUDGET.PLAYER_MOVE, 'player_move');
     console.log('Player moved to', newX, newY);
+
+    if (tile.type === TileType.CAMPFIRE) {
+      const fireDamage = this.player.takeDamage(4);
+      this.messageLog.addMessage(`You step into the fire and take ${fireDamage} damage!`, MessageType.DAMAGE);
+      if (this.player.isDead()) {
+        this.handlePlayerDeath();
+        return;
+      }
+    }
 
     const trapTriggered = this.tryTriggerTrapAt(newX, newY);
     this.revealNearbyTraps(newX, newY);
@@ -653,6 +730,7 @@ export class GameScene extends Phaser.Scene {
 
     trap.revealed = true;
     const damage = this.player.takeDamage(trap.damage);
+    this.emitPlayerNoise(x, y, NOISE_BUDGET.PLAYER_TRAP, 'trigger_trap');
     this.messageLog.addMessage(
       `You trigger a spike trap and take ${damage} damage!`,
       MessageType.DAMAGE
@@ -694,10 +772,12 @@ export class GameScene extends Phaser.Scene {
     if (Math.random() <= disarmChance) {
       this.disarmTrapAtSafe(trap.x, trap.y);
       this.messageLog.addMessage('You carefully disarm a spike trap.', MessageType.SYSTEM);
+      this.emitPlayerNoise(this.player.x, this.player.y, NOISE_BUDGET.PLAYER_INTERACT, 'disarm_trap');
     } else {
       const damage = this.player.takeDamage(Math.max(1, Math.floor(trap.damage / 2)));
       trap.revealed = true;
       this.messageLog.addMessage(`Disarm failed! The trap wounds you for ${damage} damage.`, MessageType.DAMAGE);
+      this.emitPlayerNoise(this.player.x, this.player.y, NOISE_BUDGET.PLAYER_TRAP, 'failed_disarm');
       if (this.player.isDead()) {
         this.handlePlayerDeath();
         return;
@@ -756,25 +836,51 @@ export class GameScene extends Phaser.Scene {
   }
 
   private tryUseStairs(direction: 'up' | 'down'): void {
-    const tile = this.gameMap.getTile(this.player.x, this.player.y);
+    let tile = this.gameMap.getTile(this.player.x, this.player.y);
     if (!tile) return;
 
     if (direction === 'up') {
       if (tile.type !== TileType.STAIRS_UP) {
-        this.messageLog.addMessage('You are not standing on up stairs (<).', MessageType.SYSTEM);
-        this.render();
-        return;
+        const nearby = this.findNearbyStair(TileType.STAIRS_UP);
+        if (!nearby) {
+          this.messageLog.addMessage('You are not standing on up stairs (<).', MessageType.SYSTEM);
+          this.render();
+          return;
+        }
+        this.player.setPosition(nearby.x, nearby.y);
+        tile = this.gameMap.getTile(this.player.x, this.player.y);
       }
+      this.emitPlayerNoise(this.player.x, this.player.y, NOISE_BUDGET.PLAYER_INTERACT, 'use_stairs');
       this.goUpStairs();
       return;
     }
 
     if (tile.type !== TileType.STAIRS_DOWN) {
-      this.messageLog.addMessage('You are not standing on down stairs (>).', MessageType.SYSTEM);
-      this.render();
-      return;
+      const nearby = this.findNearbyStair(TileType.STAIRS_DOWN);
+      if (!nearby) {
+        this.messageLog.addMessage('You are not standing on down stairs (>).', MessageType.SYSTEM);
+        this.render();
+        return;
+      }
+      this.player.setPosition(nearby.x, nearby.y);
+      tile = this.gameMap.getTile(this.player.x, this.player.y);
     }
+    this.emitPlayerNoise(this.player.x, this.player.y, NOISE_BUDGET.PLAYER_INTERACT, 'use_stairs');
     this.goDownStairs();
+  }
+
+  private findNearbyStair(type: TileType.STAIRS_UP | TileType.STAIRS_DOWN): { x: number; y: number } | null {
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        const x = this.player.x + dx;
+        const y = this.player.y + dy;
+        const tile = this.gameMap.getTile(x, y);
+        if (tile?.type === type) {
+          return { x, y };
+        }
+      }
+    }
+    return null;
   }
 
   private tryUseAltar(): void {
@@ -1073,6 +1179,7 @@ export class GameScene extends Phaser.Scene {
       }
     }
 
+    this.emitPlayerNoise(this.player.x, this.player.y, NOISE_BUDGET.PLAYER_USE_ITEM, 'drink_fountain');
     this.processTurn();
   }
 
@@ -1112,6 +1219,7 @@ export class GameScene extends Phaser.Scene {
       newGrassTile.visible = this.currentFloor === 0;
     }
     this.messageLog.addMessage('You break off a sturdy stick. It can be equipped as a weapon.', MessageType.SYSTEM);
+    this.emitPlayerNoise(this.player.x, this.player.y, NOISE_BUDGET.PLAYER_INTERACT, 'break_stick');
     this.render();
   }
 
@@ -1196,6 +1304,7 @@ export class GameScene extends Phaser.Scene {
       this.messageLog.addMessage('The chest was empty.', MessageType.SYSTEM);
     }
 
+    this.emitPlayerNoise(x, y, NOISE_BUDGET.PLAYER_INTERACT, 'open_chest');
     this.processTurn();
   }
   
@@ -1211,6 +1320,7 @@ export class GameScene extends Phaser.Scene {
     
     // Only process monster turns in dungeons
     if (this.currentFloor === 0) {
+      this.noiseSystem.decayNoise();
       this.render();
       return;
     }
@@ -1219,11 +1329,22 @@ export class GameScene extends Phaser.Scene {
     for (const monster of this.monsters) {
       if (monster.isDead()) continue;
 
+      this.triggerMonsterPhaseIfNeeded(monster);
+      if (monster.isDead()) {
+        this.monsterAISystem.cleanupMonster(monster);
+        continue;
+      }
+      if (this.player.isDead()) {
+        this.handlePlayerDeath();
+        return;
+      }
+
       const action = this.monsterAISystem.updateMonsterAI(
         monster,
         this.player,
         this.gameMap,
-        this.monsters
+        this.monsters,
+        this.noiseSystem.getActiveNoiseEvents()
       );
       this.executeMonsterAction(monster, action);
 
@@ -1238,6 +1359,7 @@ export class GameScene extends Phaser.Scene {
     }
 
     this.updateQuestProgress();
+    this.noiseSystem.decayNoise();
     
     // Render after all monsters have acted
     this.render();
@@ -1263,6 +1385,105 @@ export class GameScene extends Phaser.Scene {
         `Talent unlocked: ${talent.name} (${talent.description}).`,
         MessageType.INFO
       );
+    }
+  }
+
+  private triggerMonsterPhaseIfNeeded(monster: Monster): void {
+    const template = getMonsterTemplate(monster.templateId);
+    if (!template?.phases || template.phases.length === 0) {
+      return;
+    }
+
+    const hpPercent = (monster.currentHP / monster.maxHP) * 100;
+    const pendingPhase = [...template.phases]
+      .sort((left, right) => right.threshold - left.threshold)
+      .find(
+        (phase) =>
+          hpPercent <= phase.threshold &&
+          !monster.triggeredPhaseThresholds.has(phase.threshold)
+      );
+
+    if (!pendingPhase) {
+      return;
+    }
+
+    monster.triggeredPhaseThresholds.add(pendingPhase.threshold);
+    this.messageLog.addMessage(
+      `${monster.name} telegraphs ${pendingPhase.abilityName}: ${pendingPhase.telegraph}`,
+      MessageType.WARNING
+    );
+    this.applyMonsterPhaseEffects(monster, pendingPhase);
+  }
+
+  private applyMonsterPhaseEffects(monster: Monster, phase: MonsterPhaseDefinition): void {
+    for (const effect of phase.effects) {
+      switch (effect.type) {
+        case 'heal_self': {
+          const healed = monster.heal(effect.amount);
+          if (healed > 0) {
+            this.messageLog.addMessage(
+              `${monster.name} restores ${healed} HP.`,
+              MessageType.HEAL
+            );
+          }
+          break;
+        }
+        case 'damage_player': {
+          const damage = this.player.takeDamage(effect.amount);
+          if (damage > 0) {
+            this.messageLog.addMessage(
+              `${monster.name}'s ${phase.abilityName} hits you for ${damage} damage!`,
+              MessageType.DAMAGE
+            );
+          }
+          break;
+        }
+        case 'buff_self': {
+          if (effect.attack) {
+            monster.attack += effect.attack;
+          }
+          if (effect.defense) {
+            monster.defense = Math.max(0, monster.defense + effect.defense);
+          }
+          if (effect.speed) {
+            monster.speed += effect.speed;
+          }
+          this.messageLog.addMessage(
+            `${monster.name} grows more dangerous.`,
+            MessageType.INFO
+          );
+          break;
+        }
+        case 'curse_player': {
+          this.player.addStatusEffect({
+            type: effect.curseType,
+            duration: effect.duration,
+            power: effect.power,
+          });
+          this.messageLog.addMessage(
+            `${monster.name} inflicts ${this.formatCurseName(effect.curseType)}!`,
+            MessageType.WARNING
+          );
+          break;
+        }
+      }
+    }
+  }
+
+  private formatCurseName(curseType: PlayerStatusEffectType): string {
+    switch (curseType) {
+      case 'curse_weakness':
+        return 'Curse of Weakness';
+      case 'curse_frailty':
+        return 'Curse of Frailty';
+      case 'curse_wither':
+        return 'Withering Curse';
+      case 'poison':
+        return 'Poison';
+      case 'regenerate':
+        return 'Regeneration';
+      default:
+        return 'a curse';
     }
   }
 
@@ -1653,12 +1874,16 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  private executeMonsterAction(monster: Monster, action: { type: ActionType; targetX?: number; targetY?: number }): void {
+  private executeMonsterAction(
+    monster: Monster,
+    action: { type: ActionType; targetX?: number; targetY?: number; intent?: 'investigate' }
+  ): void {
     switch (action.type) {
       case ActionType.MELEE_ATTACK: {
         const result = this.combatSystem.meleeAttack(monster, this.player);
         this.messageLog.addMessage(result.message, MessageType.COMBAT);
         this.applyDurabilityWearOnPlayerDefense();
+        this.emitMonsterNoise(monster, NOISE_BUDGET.MONSTER_MELEE, 'monster_melee');
         break;
       }
       case ActionType.RANGED_ATTACK: {
@@ -1668,6 +1893,7 @@ export class GameScene extends Phaser.Scene {
         const result = this.combatSystem.rangedAttack(monster, this.player, distance);
         this.messageLog.addMessage(result.message, MessageType.COMBAT);
         this.applyDurabilityWearOnPlayerDefense();
+        this.emitMonsterNoise(monster, NOISE_BUDGET.MONSTER_RANGED, 'monster_ranged');
         break;
       }
       case ActionType.MOVE:
@@ -1694,9 +1920,18 @@ export class GameScene extends Phaser.Scene {
         }
 
         monster.setPosition(action.targetX, action.targetY);
+        this.emitMonsterNoise(monster, NOISE_BUDGET.MONSTER_MOVE, 'monster_move');
+        if (action.intent === 'investigate') {
+          const tile = this.gameMap.getTile(monster.x, monster.y);
+          if (tile?.visible) {
+            this.messageLog.addMessage(`${monster.name} moves toward a suspicious sound.`, MessageType.INFO);
+          }
+        }
         break;
       }
       case ActionType.SPECIAL_ABILITY:
+        this.emitMonsterNoise(monster, NOISE_BUDGET.MONSTER_SPECIAL, 'monster_special');
+        break;
       case ActionType.WAIT:
       default:
         break;
@@ -1724,6 +1959,7 @@ export class GameScene extends Phaser.Scene {
       if (distance <= 1) {
         console.log('Talking to', npc.name);
         this.messageLog.addMessage(`You talk to ${npc.name}.`, MessageType.SYSTEM);
+        this.emitPlayerNoise(this.player.x, this.player.y, NOISE_BUDGET.PLAYER_INTERACT, 'talk_npc');
         
         // Launch DialogueScene with NPC object
         this.scene.launch('DialogueScene', { npc: npc });
@@ -1740,7 +1976,14 @@ export class GameScene extends Phaser.Scene {
     this.scene.launch('InventoryScene', {
       player: this.player,
       gameMap: this.gameMap,
-      onInventoryChanged: () => this.render(),
+      onInventoryChanged: (action?: 'equip' | 'unequip' | 'use' | 'drop') => {
+        if (action === 'use') {
+          this.emitPlayerNoise(this.player.x, this.player.y, NOISE_BUDGET.PLAYER_USE_ITEM, 'inventory_use');
+        } else if (action === 'drop' || action === 'equip' || action === 'unequip') {
+          this.emitPlayerNoise(this.player.x, this.player.y, NOISE_BUDGET.PLAYER_INTERACT, 'inventory_manage');
+        }
+        this.render();
+      },
     });
     this.scene.pause('GameScene');
   }
@@ -1771,6 +2014,47 @@ export class GameScene extends Phaser.Scene {
 
     this.gameMap.removeItem(item);
     this.messageLog.addMessage(`Picked up ${inventoryItem.name}.`, MessageType.SYSTEM);
+    this.emitPlayerNoise(this.player.x, this.player.y, NOISE_BUDGET.PLAYER_PICKUP, 'pickup_item');
+  }
+
+  private emitPlayerNoise(
+    x: number,
+    y: number,
+    budget: { loudness: number; radius: number },
+    reason: string
+  ): void {
+    if (this.currentFloor <= 0) {
+      return;
+    }
+    this.noiseSystem.emitNoise({
+      x,
+      y,
+      loudness: budget.loudness,
+      radius: budget.radius,
+      sourceKind: 'player',
+      reason,
+    });
+    if (budget.loudness >= HIGH_NOISE_THRESHOLD) {
+      this.messageLog.addMessage('Your action echoes loudly through the dungeon.', MessageType.WARNING);
+    }
+  }
+
+  private emitMonsterNoise(
+    monster: Monster,
+    budget: { loudness: number; radius: number },
+    reason: string
+  ): void {
+    if (this.currentFloor <= 0) {
+      return;
+    }
+    this.noiseSystem.emitNoise({
+      x: monster.x,
+      y: monster.y,
+      loudness: budget.loudness,
+      radius: budget.radius,
+      sourceKind: 'monster',
+      reason,
+    });
   }
 
   private toInventoryItem(item: GroundItem): {
@@ -1783,6 +2067,11 @@ export class GameScene extends Phaser.Scene {
     enchantmentBonus?: number;
     currentDurability?: number;
     maxDurability?: number;
+    corpseSourceId?: string;
+    corpseCursed?: boolean;
+    corpseEdible?: boolean;
+    corpseCooked?: boolean;
+    corpseSeasoned?: boolean;
   } {
     const itemDef = ITEMS.find((entry) => entry.id === item.id);
     const isPotentiallyMagicalEquipment =
@@ -1800,6 +2089,11 @@ export class GameScene extends Phaser.Scene {
       enchantmentBonus: item.enchantmentBonus,
       currentDurability: item.currentDurability,
       maxDurability: item.maxDurability,
+      corpseSourceId: item.corpseSourceId,
+      corpseCursed: item.corpseCursed,
+      corpseEdible: item.corpseEdible,
+      corpseCooked: item.corpseCooked,
+      corpseSeasoned: item.corpseSeasoned,
     };
     ensureDurability(inventoryItem, itemDef);
     return inventoryItem;
@@ -1905,6 +2199,293 @@ export class GameScene extends Phaser.Scene {
       padding: { x: 8, y: 8 },
     });
     this.pickupOverlay.setDepth(1000);
+  }
+
+  private isCookingSelectionActive(): boolean {
+    return this.cookingSelectionItems.length > 0;
+  }
+
+  private tryOpenCookingSelection(): void {
+    if (this.currentFloor <= 0) {
+      this.messageLog.addMessage('You cannot cook in town right now.', MessageType.SYSTEM);
+      this.render();
+      return;
+    }
+    if (!this.isNearFire(this.player.x, this.player.y)) {
+      this.messageLog.addMessage('You need to stand near a campfire to cook.', MessageType.SYSTEM);
+      this.render();
+      return;
+    }
+
+    const cookableCorpses = this.getCookableCorpses();
+    if (cookableCorpses.length === 0) {
+      this.messageLog.addMessage('You have no edible raw corpses to cook.', MessageType.SYSTEM);
+      this.render();
+      return;
+    }
+
+    this.cookingSelectionItems = cookableCorpses;
+    this.cookingSelectionIndex = 0;
+    this.drawCookingSelectionOverlay();
+  }
+
+  private closeCookingSelection(): void {
+    this.cookingSelectionItems = [];
+    this.cookingSelectionIndex = 0;
+    if (this.cookingOverlay) {
+      this.cookingOverlay.destroy();
+      this.cookingOverlay = undefined;
+    }
+    this.render();
+  }
+
+  private handleCookingSelectionKey(key: string): void {
+    if (!this.isCookingSelectionActive()) {
+      return;
+    }
+
+    switch (key.toLowerCase()) {
+      case 'arrowup':
+      case 'w':
+        this.cookingSelectionIndex = Math.max(0, this.cookingSelectionIndex - 1);
+        this.drawCookingSelectionOverlay();
+        break;
+      case 'arrowdown':
+      case 's':
+        this.cookingSelectionIndex = Math.min(
+          this.cookingSelectionItems.length - 1,
+          this.cookingSelectionIndex + 1
+        );
+        this.drawCookingSelectionOverlay();
+        break;
+      case 'enter': {
+        const selected = this.cookingSelectionItems[this.cookingSelectionIndex];
+        this.closeCookingSelection();
+        this.cookCorpseItem(selected);
+        break;
+      }
+      case 'escape':
+        this.closeCookingSelection();
+        break;
+      default:
+        break;
+    }
+  }
+
+  private drawCookingSelectionOverlay(): void {
+    if (this.cookingOverlay) {
+      this.cookingOverlay.destroy();
+    }
+
+    const herbsCount = this.getInventoryQuantity('misc_spice_herbs');
+    const lines = ['Cook corpse near fire:', `Spice Herbs: ${herbsCount}`, ''];
+    for (let i = 0; i < this.cookingSelectionItems.length; i++) {
+      const corpse = this.cookingSelectionItems[i];
+      const marker = i === this.cookingSelectionIndex ? '>' : ' ';
+      const cursedTag = corpse.corpseCursed ? ' [cursed]' : '';
+      lines.push(`${marker} ${corpse.name}${cursedTag}`);
+    }
+    lines.push('');
+    lines.push('Enter: cook  Esc: cancel');
+
+    this.cookingOverlay = this.add.text(16, 40, lines.join('\n'), {
+      fontFamily: 'monospace',
+      fontSize: '14px',
+      color: '#ffffff',
+      backgroundColor: '#000000',
+      padding: { x: 8, y: 8 },
+    });
+    this.cookingOverlay.setDepth(1000);
+  }
+
+  private cookCorpseItem(corpse: CorpseInventoryItem): void {
+    const consumedCorpse = this.consumeInventoryItemByReference(corpse, 1);
+    if (!consumedCorpse) {
+      this.messageLog.addMessage('Cooking failed: corpse was not available.', MessageType.ERROR);
+      this.render();
+      return;
+    }
+
+    let seasoned = false;
+    if (this.consumeInventoryItemById('misc_spice_herbs', 1)) {
+      seasoned = true;
+    }
+
+    const cookedName = seasoned ? `Seasoned ${corpse.name}` : `Cooked ${corpse.name}`;
+    const cookedItem: CorpseInventoryItem = {
+      id: `cooked_${corpse.id}`,
+      name: cookedName,
+      type: 'misc',
+      quantity: 1,
+      rarity: corpse.rarity,
+      corpseSourceId: corpse.corpseSourceId,
+      corpseCursed: corpse.corpseCursed,
+      corpseEdible: true,
+      corpseCooked: true,
+      corpseSeasoned: seasoned,
+    };
+
+    if (!this.player.addItem(cookedItem)) {
+      this.messageLog.addMessage('Inventory full. The cooked meal is left on the ground.', MessageType.SYSTEM);
+      this.gameMap.addItem(
+        {
+          id: cookedItem.id,
+          name: cookedItem.name,
+          x: this.player.x,
+          y: this.player.y,
+          glyph: '%',
+          color: seasoned ? 0x55cc55 : 0xcc8844,
+          quantity: 1,
+          inventoryType: 'misc',
+          rarity: cookedItem.rarity,
+          corpseSourceId: cookedItem.corpseSourceId,
+          corpseCursed: cookedItem.corpseCursed,
+          corpseEdible: true,
+          corpseCooked: true,
+          corpseSeasoned: seasoned,
+        },
+        this.player.x,
+        this.player.y
+      );
+    } else {
+      this.messageLog.addMessage(
+        seasoned ? 'You cook and season the corpse into a hearty meal.' : 'You cook the corpse over the fire.',
+        MessageType.HEAL
+      );
+    }
+
+    this.emitPlayerNoise(this.player.x, this.player.y, NOISE_BUDGET.PLAYER_INTERACT, 'cook_corpse');
+    this.processTurn();
+  }
+
+  private tryEatCorpse(): void {
+    const corpses = this.player.inventory.filter(
+      (item) => item.type === 'misc' && item.corpseEdible === true
+    ) as CorpseInventoryItem[];
+    if (corpses.length === 0) {
+      this.messageLog.addMessage('You have no edible corpse in your inventory.', MessageType.SYSTEM);
+      this.render();
+      return;
+    }
+
+    const preferred = corpses.find((item) => item.corpseCooked) ?? corpses[0];
+    this.consumeInventoryItemByReference(preferred, 1);
+
+    const baseRatio = preferred.corpseCooked ? COOKED_CORPSE_HEAL_RATIO : RAW_CORPSE_HEAL_RATIO;
+    const seasonedBonus = preferred.corpseSeasoned ? SEASONED_BONUS_HEAL_RATIO : 0;
+    const healAmount = Math.max(3, Math.floor(this.player.maxHP * (baseRatio + seasonedBonus)));
+    const healed = this.player.heal(healAmount);
+    this.messageLog.addMessage(
+      `You eat ${preferred.name} and recover ${healed} HP.`,
+      MessageType.HEAL
+    );
+
+    const curseChance = preferred.corpseCursed
+      ? preferred.corpseCooked
+        ? preferred.corpseSeasoned
+          ? 0.15
+          : 0.3
+        : 0.7
+      : 0;
+    const poisonChance = preferred.corpseCooked ? 0.05 : 0.2;
+    if (preferred.corpseCursed && Math.random() < curseChance) {
+      const curseTypes: Array<'curse_weakness' | 'curse_frailty' | 'curse_wither'> = [
+        'curse_weakness',
+        'curse_frailty',
+        'curse_wither',
+      ];
+      const curseType = curseTypes[Math.floor(Math.random() * curseTypes.length)];
+      this.player.addStatusEffect({ type: curseType, duration: 5, power: 2 });
+      this.messageLog.addMessage('Dark energies seep from the meal and curse you.', MessageType.WARNING);
+    } else if (!preferred.corpseCursed && Math.random() < poisonChance) {
+      this.player.addStatusEffect({ type: 'poison', duration: 4, power: 2 });
+      this.messageLog.addMessage('The meat was tainted. You are poisoned!', MessageType.WARNING);
+    }
+
+    this.emitPlayerNoise(this.player.x, this.player.y, NOISE_BUDGET.PLAYER_USE_ITEM, 'eat_corpse');
+    this.processTurn();
+  }
+
+  private tryMakeFire(): void {
+    if (this.currentFloor <= 0) {
+      this.messageLog.addMessage('No need to build a fire in town.', MessageType.SYSTEM);
+      this.render();
+      return;
+    }
+
+    if (!this.consumeInventoryItemById('misc_tinderbox', 1)) {
+      this.messageLog.addMessage('You need a tinderbox to start a fire.', MessageType.SYSTEM);
+      this.render();
+      return;
+    }
+
+    const tile = this.gameMap.getTile(this.player.x, this.player.y);
+    if (!tile || tile.type !== TileType.FLOOR) {
+      this.messageLog.addMessage('You cannot start a fire on this tile.', MessageType.SYSTEM);
+      this.player.addItem({
+        id: 'misc_tinderbox',
+        name: 'Tinderbox',
+        type: 'misc',
+        quantity: 1,
+        rarity: 'common',
+      });
+      this.render();
+      return;
+    }
+
+    this.gameMap.setTile(this.player.x, this.player.y, TileType.CAMPFIRE, false, false);
+    this.messageLog.addMessage('You ignite a campfire using your tinderbox.', MessageType.INFO);
+    this.emitPlayerNoise(this.player.x, this.player.y, NOISE_BUDGET.PLAYER_INTERACT, 'make_fire');
+    this.processTurn();
+  }
+
+  private isNearFire(x: number, y: number): boolean {
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        const tile = this.gameMap.getTile(x + dx, y + dy);
+        if (tile?.type === TileType.CAMPFIRE) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  private getCookableCorpses(): CorpseInventoryItem[] {
+    return this.player.inventory.filter(
+      (item) => item.type === 'misc' && item.corpseEdible === true && item.corpseCooked !== true
+    ) as CorpseInventoryItem[];
+  }
+
+  private consumeInventoryItemById(itemId: string, quantity: number): boolean {
+    const entry = this.player.inventory.find((item) => item.id === itemId);
+    if (!entry || entry.quantity < quantity) {
+      return false;
+    }
+    if (entry.quantity === quantity) {
+      const index = this.player.inventory.indexOf(entry);
+      if (index !== -1) {
+        this.player.inventory.splice(index, 1);
+      }
+    } else {
+      entry.quantity -= quantity;
+    }
+    return true;
+  }
+
+  private consumeInventoryItemByReference(item: CorpseInventoryItem, quantity: number): boolean {
+    if (item.quantity < quantity) {
+      return false;
+    }
+    if (item.quantity === quantity) {
+      const index = this.player.inventory.indexOf(item);
+      if (index !== -1) {
+        this.player.inventory.splice(index, 1);
+      }
+    } else {
+      item.quantity -= quantity;
+    }
+    return true;
   }
 
   private spawnNPCsForTown(spawnPoints: NPCSpawnPoint[]): void {
@@ -2151,7 +2732,10 @@ export class GameScene extends Phaser.Scene {
   }
 
   private enterDungeonFloor(targetFloor: number, entryStairType: TileType): void {
+    const previousFloor = this.currentFloor;
+    const previousMap = this.gameMap;
     this.currentFloor = targetFloor;
+    this.noiseSystem.clear();
     const cachedState =
       this.dungeonGenerationMode === 'persistent' ? this.dungeonFloorStates.get(targetFloor) : undefined;
 
@@ -2166,7 +2750,18 @@ export class GameScene extends Phaser.Scene {
       this.spawnNPCsForDungeon(targetFloor);
     }
 
-    const stairPos = this.findStairPosition(entryStairType) ?? { x: 40, y: 20 };
+    if (this.gameMap === previousMap && targetFloor !== previousFloor) {
+      const dungeonGen = new DungeonGenerator();
+      this.gameMap = dungeonGen.generate(targetFloor, 80, 40);
+      this.monsters = this.monsterSpawnSystem.spawnMonstersInDungeon(this.gameMap, targetFloor);
+      this.itemSpawnSystem.spawnItemsInDungeon(this.gameMap, targetFloor);
+      this.spawnNPCsForDungeon(targetFloor);
+    }
+
+    const stairPos =
+      this.findStairPosition(entryStairType) ??
+      this.ensureEntryStair(entryStairType) ??
+      { x: 40, y: 20 };
     const safeSpawn = this.findSafeSpawnNear(stairPos.x, stairPos.y, 10);
     this.player.setPosition(safeSpawn.x, safeSpawn.y);
     this.gameMap.addEntity(this.player);
@@ -2197,7 +2792,20 @@ export class GameScene extends Phaser.Scene {
 
     this.markDungeonSpawnAreaExplored(safeSpawn.x, safeSpawn.y);
     fovSystem.compute(this.gameMap, safeSpawn.x, safeSpawn.y, 10);
+    this.messageLog.addMessage(`Entered dungeon level ${targetFloor}.`, MessageType.INFO);
     this.render();
+  }
+
+  private ensureEntryStair(type: TileType.STAIRS_UP | TileType.STAIRS_DOWN): { x: number; y: number } | null {
+    const centerX = Math.floor(this.gameMap.width / 2);
+    const centerY = Math.floor(this.gameMap.height / 2);
+    const safe = this.findSafeSpawnNear(centerX, centerY, 12);
+    const tile = this.gameMap.getTile(safe.x, safe.y);
+    if (!tile || tile.type !== TileType.FLOOR) {
+      return null;
+    }
+    this.gameMap.setTile(safe.x, safe.y, type, false, false);
+    return { x: safe.x, y: safe.y };
   }
 
   private goDownStairs(): void {
@@ -2222,6 +2830,7 @@ export class GameScene extends Phaser.Scene {
       
       // Clear monsters when returning to town
       this.monsters = [];
+      this.noiseSystem.clear();
       
       const townGen = new TownGenerator();
       const townData = townGen.generate();
@@ -2338,6 +2947,10 @@ export class GameScene extends Phaser.Scene {
           case TileType.ALTAR:
             glyph = 'A';
             color = tile.visible ? 0xff44ff : 0x772277;
+            break;
+          case TileType.CAMPFIRE:
+            glyph = '^';
+            color = tile.visible ? 0xffee66 : 0x996600;
             break;
         }
 

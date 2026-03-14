@@ -313,8 +313,14 @@ export class CombatSystem {
    * Create a corpse item from dead entity
    */
   private createCorpse(entity: Entity): Item {
+    const sourceId =
+      entity instanceof Monster && entity.templateId
+        ? entity.templateId
+        : entity.name.toLowerCase().replace(/\s+/g, '_');
+    const corpseMeta = this.getCorpseMetadata(sourceId);
+
     return {
-      id: `corpse_${entity.name.toLowerCase().replace(/\s+/g, '_')}`,
+      id: `corpse_${sourceId}`,
       name: `${entity.name} corpse`,
       x: entity.x,
       y: entity.y,
@@ -323,7 +329,25 @@ export class CombatSystem {
       quantity: 1,
       inventoryType: 'misc',
       rarity: 'common',
+      corpseSourceId: sourceId,
+      corpseCursed: corpseMeta.cursed,
+      corpseEdible: corpseMeta.edible,
+      corpseCooked: false,
+      corpseSeasoned: false,
     };
+  }
+
+  private getCorpseMetadata(sourceId: string): { cursed: boolean; edible: boolean } {
+    if (sourceId === 'skeleton') {
+      return { cursed: false, edible: false };
+    }
+    if (sourceId === 'dark_mage') {
+      return { cursed: false, edible: false };
+    }
+    if (sourceId === 'wraith' || sourceId === 'lich_king') {
+      return { cursed: true, edible: true };
+    }
+    return { cursed: false, edible: true };
   }
 
   private getInventoryType(itemId: string): 'weapon' | 'armor' | 'potion' | 'misc' {

@@ -31,6 +31,11 @@ export interface InventoryItem {
   enchantmentBonus?: number;
   currentDurability?: number;
   maxDurability?: number;
+  corpseSourceId?: string;
+  corpseCursed?: boolean;
+  corpseEdible?: boolean;
+  corpseCooked?: boolean;
+  corpseSeasoned?: boolean;
 }
 
 /**

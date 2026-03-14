@@ -10,6 +10,7 @@ import { GameMap } from '../world/map';
 import { getPathfinder, isPathClear, getDistance } from '../world/pathfinding';
 import type { CombatIntent, MonsterAICondition } from '../types/monster-ai-rules';
 import type { StatusEffect } from '../types/status-effects';
+import type { NoiseEvent } from './noise-system';
 
 // ============================================================================
 // TYPE DEFINITIONS
@@ -36,6 +37,7 @@ export interface MonsterAction {
   targetY?: number;
   abilityId?: string;
   damage?: number;
+  intent?: 'investigate';
 }
 
 /**
@@ -94,7 +96,8 @@ export class MonsterAISystem {
     monster: Monster,
     player: Player,
     map: GameMap,
-    allMonsters: Monster[]
+    allMonsters: Monster[],
+    noiseEvents: readonly NoiseEvent[] = []
   ): MonsterAction {
     // Process cooldowns for abilities
     this.updateCooldowns(monster);
@@ -109,6 +112,17 @@ export class MonsterAISystem {
 
     // Update aggro state
     monster.updateAggro(canSeePlayer);
+    if (canSeePlayer) {
+      monster.lastHeardNoisePos = null;
+      monster.noiseInvestigationTurnsRemaining = 0;
+    }
+
+    if (!canSeePlayer) {
+      const investigateAction = this.getNoiseInvestigationAction(monster, map, noiseEvents);
+      if (investigateAction) {
+        return investigateAction;
+      }
+    }
 
     const conditionalAction = this.evaluateConditionalRules(
       monster,
@@ -147,6 +161,97 @@ export class MonsterAISystem {
       default:
         return { type: ActionType.WAIT };
     }
+  }
+
+  private getNoiseInvestigationAction(
+    monster: Monster,
+    map: GameMap,
+    noiseEvents: readonly NoiseEvent[]
+  ): MonsterAction | null {
+    const heardNoise = this.selectAudibleNoise(monster, noiseEvents);
+    if (heardNoise) {
+      monster.lastHeardNoisePos = { x: heardNoise.x, y: heardNoise.y };
+      monster.noiseInvestigationTurnsRemaining = 3;
+    }
+
+    if (!monster.lastHeardNoisePos || monster.noiseInvestigationTurnsRemaining <= 0) {
+      monster.lastHeardNoisePos = null;
+      monster.noiseInvestigationTurnsRemaining = 0;
+      return null;
+    }
+
+    const action = this.investigateNoiseBehavior(monster, monster.lastHeardNoisePos, map);
+    monster.noiseInvestigationTurnsRemaining = Math.max(0, monster.noiseInvestigationTurnsRemaining - 1);
+
+    if (action.type === ActionType.WAIT && monster.noiseInvestigationTurnsRemaining <= 0) {
+      monster.lastHeardNoisePos = null;
+    }
+
+    return action;
+  }
+
+  private selectAudibleNoise(
+    monster: Monster,
+    noiseEvents: readonly NoiseEvent[]
+  ): NoiseEvent | null {
+    let bestNoise: NoiseEvent | null = null;
+    let bestPerceivedLoudness = monster.hearingThreshold;
+
+    for (const event of noiseEvents) {
+      if (event.sourceKind === 'monster' && event.x === monster.x && event.y === monster.y) {
+        continue;
+      }
+
+      const distance = getDistance(monster.x, monster.y, event.x, event.y);
+      if (distance > event.radius) {
+        continue;
+      }
+
+      const perceivedLoudness = event.loudness - distance * 0.5;
+      if (perceivedLoudness < bestPerceivedLoudness) {
+        continue;
+      }
+
+      bestPerceivedLoudness = perceivedLoudness;
+      bestNoise = event;
+    }
+
+    return bestNoise;
+  }
+
+  private investigateNoiseBehavior(
+    monster: Monster,
+    target: { x: number; y: number },
+    map: GameMap
+  ): MonsterAction {
+    if (monster.x === target.x && monster.y === target.y) {
+      return { type: ActionType.WAIT };
+    }
+
+    const nextStep = this.pathfinder.getNextStep(map, monster.x, monster.y, target.x, target.y);
+    if (nextStep) {
+      const [targetX, targetY] = nextStep;
+      return {
+        type: ActionType.MOVE,
+        targetX,
+        targetY,
+        intent: 'investigate',
+      };
+    }
+
+    const [dx, dy] = monster.getAIDirection(target.x, target.y);
+    const nextX = monster.x + dx;
+    const nextY = monster.y + dy;
+    if (map.isInBounds(nextX, nextY) && !map.isBlocked(nextX, nextY)) {
+      return {
+        type: ActionType.MOVE,
+        targetX: nextX,
+        targetY: nextY,
+        intent: 'investigate',
+      };
+    }
+
+    return { type: ActionType.WAIT };
   }
 
   private evaluateConditionalRules(
@@ -895,6 +1000,8 @@ export class MonsterAISystem {
   cleanupMonster(monster: Monster): void {
     this.abilityRegistry.delete(monster);
     this.statusEffects.delete(monster);
+    monster.lastHeardNoisePos = null;
+    monster.noiseInvestigationTurnsRemaining = 0;
   }
 }
 

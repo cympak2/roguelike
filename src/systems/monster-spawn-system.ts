@@ -61,8 +61,17 @@ export class MonsterSpawnSystem {
       const template = this.selectMonsterForFloor(floorNumber);
       if (!template) continue;
 
+      const preferredLocations = spawnLocations.filter((location) =>
+        this.isNearCampfire(map, location.x, location.y, 4)
+      );
+      const pickNearCampfire = preferredLocations.length > 0 && this.random.chance(0.55);
+      const locationPool = pickNearCampfire ? preferredLocations : spawnLocations;
+
       // Pick random spawn location and remove it from available locations
-      const locationIndex = this.random.randomInt(0, spawnLocations.length - 1);
+      const selectedLocation = locationPool[this.random.randomInt(0, locationPool.length - 1)];
+      const locationIndex = spawnLocations.findIndex(
+        (location) => location.x === selectedLocation.x && location.y === selectedLocation.y
+      );
       const location = spawnLocations[locationIndex];
       spawnLocations.splice(locationIndex, 1);
 
@@ -206,6 +215,18 @@ export class MonsterSpawnSystem {
       bossLocation.x,
       bossLocation.y
     );
+  }
+
+  private isNearCampfire(map: GameMap, x: number, y: number, radius: number): boolean {
+    for (let dy = -radius; dy <= radius; dy++) {
+      for (let dx = -radius; dx <= radius; dx++) {
+        const tile = map.getTile(x + dx, y + dy);
+        if (tile?.type === TileType.CAMPFIRE) {
+          return true;
+        }
+      }
+    }
+    return false;
   }
 
   /**

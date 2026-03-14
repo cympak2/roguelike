@@ -33,6 +33,35 @@ export interface MonsterAbility {
   cooldown: number;
 }
 
+export type MonsterPhaseEffect =
+  | {
+      type: 'heal_self';
+      amount: number;
+    }
+  | {
+      type: 'damage_player';
+      amount: number;
+    }
+  | {
+      type: 'buff_self';
+      attack?: number;
+      defense?: number;
+      speed?: number;
+    }
+  | {
+      type: 'curse_player';
+      curseType: 'curse_weakness' | 'curse_frailty' | 'curse_wither';
+      duration: number;
+      power: number;
+    };
+
+export interface MonsterPhaseDefinition {
+  threshold: 70 | 40 | 15;
+  abilityName: string;
+  telegraph: string;
+  effects: MonsterPhaseEffect[];
+}
+
 export interface MonsterDefinition {
   id: string;
   name: string;
@@ -45,6 +74,7 @@ export interface MonsterDefinition {
   glyph: string;
   aiType: 'aggressive' | 'wanderer' | 'ambusher' | 'cowardly' | 'stationary';
   aiRules: MonsterAIRules;
+  phases?: MonsterPhaseDefinition[];
   sightRange: number;
   spawnWeight: number; // Probability weight for dungeon generation
 }
@@ -501,6 +531,29 @@ const DRAGON_WYRMLING: MonsterDefinition = {
   glyph: GLYPHS.DRAGON,
   aiType: 'aggressive',
   aiRules: AGGRESSIVE_RANGED_AI_RULES,
+  phases: [
+    {
+      threshold: 70,
+      abilityName: 'Scorching Breath',
+      telegraph: 'The wyrmling inhales deeply, embers glowing in its throat.',
+      effects: [{ type: 'damage_player', amount: 8 }],
+    },
+    {
+      threshold: 40,
+      abilityName: 'Molten Scales',
+      telegraph: 'Molten scales harden across its body.',
+      effects: [
+        { type: 'buff_self', defense: 3 },
+        { type: 'heal_self', amount: 20 },
+      ],
+    },
+    {
+      threshold: 15,
+      abilityName: 'Dragon Frenzy',
+      telegraph: 'The wyrmling roars and enters a desperate frenzy.',
+      effects: [{ type: 'buff_self', attack: 4, speed: 1 }],
+    },
+  ],
   sightRange: 12,
   spawnWeight: 2,
 };
@@ -566,6 +619,44 @@ const LICH_KING: MonsterDefinition = {
   glyph: 'L',
   aiType: 'aggressive',
   aiRules: BOSS_AI_RULES,
+  phases: [
+    {
+      threshold: 70,
+      abilityName: 'Soul Curse',
+      telegraph: 'Necrotic sigils flare around the Lich King.',
+      effects: [
+        {
+          type: 'curse_player',
+          curseType: 'curse_weakness',
+          duration: 4,
+          power: 2,
+        },
+      ],
+    },
+    {
+      threshold: 40,
+      abilityName: 'Drain All',
+      telegraph: 'Shadows spiral outward as the Lich King siphons life.',
+      effects: [
+        { type: 'damage_player', amount: 12 },
+        { type: 'heal_self', amount: 35 },
+      ],
+    },
+    {
+      threshold: 15,
+      abilityName: 'Phylactery Overload',
+      telegraph: 'The phylactery cracks with unstable arcane power.',
+      effects: [
+        { type: 'buff_self', attack: 3, defense: 2 },
+        {
+          type: 'curse_player',
+          curseType: 'curse_wither',
+          duration: 4,
+          power: 2,
+        },
+      ],
+    },
+  ],
   sightRange: 15,
   spawnWeight: 1,
 };

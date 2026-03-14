@@ -557,6 +557,32 @@ const TORCH: Item = {
   description: 'A basic light source for dark places.',
 };
 
+const TINDERBOX: Item = {
+  id: 'misc_tinderbox',
+  name: 'Tinderbox',
+  glyph: 'i',
+  color: '#FF9933',
+  type: ItemType.MISCELLANEOUS,
+  rarity: ItemRarity.COMMON,
+  value: 20,
+  weight: 0.4,
+  stackable: true,
+  description: 'A kit for starting small fires in dry places.',
+};
+
+const SPICE_HERBS: Item = {
+  id: 'misc_spice_herbs',
+  name: 'Spice Herbs',
+  glyph: ',',
+  color: '#66CC66',
+  type: ItemType.MISCELLANEOUS,
+  rarity: ItemRarity.COMMON,
+  value: 14,
+  weight: 0.1,
+  stackable: true,
+  description: 'Aromatic herbs that improve cooked meals.',
+};
+
 const SMOKE_BOMB: Item = {
   id: 'smoke_bomb',
   name: 'Smoke Bomb',
@@ -718,6 +744,8 @@ export const ITEMS: ItemDefinition[] = [
   RUSTY_KEY,
   ROPE,
   TORCH,
+  TINDERBOX,
+  SPICE_HERBS,
   SMOKE_BOMB,
   RAT_TAIL,
   BONE_FRAGMENT,
