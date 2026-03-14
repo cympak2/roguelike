@@ -22,6 +22,8 @@ export interface InventoryItem {
   type: 'weapon' | 'armor' | 'potion' | 'misc';
   quantity: number;
   rarity: 'common' | 'uncommon' | 'rare' | 'epic' | 'legendary';
+  identified?: boolean;
+  enchantmentBonus?: number;
 }
 
 /**

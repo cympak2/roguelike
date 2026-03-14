@@ -18,6 +18,7 @@ import { CombatSystem } from '../systems/combat-system';
 import { MonsterSpawnSystem } from '../systems/monster-spawn-system';
 import { ItemSpawnSystem } from '../systems/item-spawn-system';
 import { MonsterAISystem, ActionType } from '../systems/monster-ai-system';
+import { ITEMS, ItemType } from '../config/item-data';
 
 interface QuestDefinition {
   id: string;
@@ -1369,13 +1370,23 @@ export class GameScene extends Phaser.Scene {
     type: 'weapon' | 'armor' | 'potion' | 'misc';
     quantity: number;
     rarity: 'common' | 'uncommon' | 'rare' | 'epic' | 'legendary';
+    identified?: boolean;
+    enchantmentBonus?: number;
   } {
+    const itemDef = ITEMS.find((entry) => entry.id === item.id);
+    const isPotentiallyMagicalEquipment =
+      itemDef !== undefined &&
+      (itemDef.type === ItemType.WEAPON || itemDef.type === ItemType.ARMOR) &&
+      (item.rarity === 'rare' || item.rarity === 'epic' || item.rarity === 'legendary');
+
     return {
       id: item.id,
       name: item.name,
       type: item.inventoryType ?? 'misc',
       quantity: item.quantity ?? 1,
       rarity: item.rarity ?? 'common',
+      identified: item.identified ?? (isPotentiallyMagicalEquipment ? false : true),
+      enchantmentBonus: item.enchantmentBonus,
     };
   }
 

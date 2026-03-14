@@ -89,6 +89,8 @@ export interface Item {
   quantity?: number;
   inventoryType?: 'weapon' | 'armor' | 'potion' | 'misc';
   rarity?: 'common' | 'uncommon' | 'rare' | 'epic' | 'legendary';
+  identified?: boolean;
+  enchantmentBonus?: number;
   isGold?: boolean;
   goldAmount?: number;
 }

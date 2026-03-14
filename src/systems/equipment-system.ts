@@ -149,9 +149,9 @@ export class EquipmentSystem {
       return false;
     }
 
-    // Find item in inventory
-    const invItem = player.getItem(item.id);
-    if (!invItem) {
+    // Find item in inventory by reference to preserve item-specific metadata.
+    const inventoryIndex = player.inventory.indexOf(item);
+    if (inventoryIndex === -1) {
       return false;
     }
 
@@ -164,13 +164,11 @@ export class EquipmentSystem {
     // Unequip current item in that slot if one exists
     const previousItem = player.equipment[slot];
     // Remove selected item from inventory first to free one slot.
-    if (!player.removeItem(item.id)) {
-      return false;
-    }
+    player.inventory.splice(inventoryIndex, 1);
 
     if (previousItem && !player.addItem(previousItem)) {
       // Roll back if we cannot store the previously equipped item.
-      player.addItem(item);
+      player.inventory.splice(inventoryIndex, 0, item);
       return false;
     }
 
@@ -242,10 +240,12 @@ export class EquipmentSystem {
         const weaponDef = itemDef as Weapon;
         stats.attack += weaponDef.damage;
         stats.attack += weaponDef.attackBonus;
+        stats.attack += item.enchantmentBonus ?? 0;
       } else if (itemDef.type === ItemType.ARMOR) {
         const armorDef = itemDef as Armor;
         stats.defense += armorDef.defense;
         stats.defense += armorDef.armorClass;
+        stats.defense += item.enchantmentBonus ?? 0;
       }
     }
 
@@ -264,7 +264,7 @@ export class EquipmentSystem {
     const weaponDef = ITEMS.find((i) => i.id === weapon.id) as Weapon;
     if (!weaponDef || weaponDef.type !== ItemType.WEAPON) return 0;
 
-    return weaponDef.damage + weaponDef.attackBonus;
+    return weaponDef.damage + weaponDef.attackBonus + (weapon.enchantmentBonus ?? 0);
   }
 
   /**
@@ -280,7 +280,7 @@ export class EquipmentSystem {
     if (armor) {
       const armorDef = ITEMS.find((i) => i.id === armor.id) as Armor;
       if (armorDef && armorDef.type === ItemType.ARMOR) {
-        defense += armorDef.defense + armorDef.armorClass;
+        defense += armorDef.defense + armorDef.armorClass + (armor.enchantmentBonus ?? 0);
       }
     }
 
@@ -289,7 +289,7 @@ export class EquipmentSystem {
     if (shield) {
       const shieldDef = ITEMS.find((i) => i.id === shield.id) as Armor;
       if (shieldDef && shieldDef.type === ItemType.ARMOR) {
-        defense += shieldDef.defense + shieldDef.armorClass;
+        defense += shieldDef.defense + shieldDef.armorClass + (shield.enchantmentBonus ?? 0);
       }
     }
 

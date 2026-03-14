@@ -1,7 +1,7 @@
 import Phaser from 'phaser';
 import { ASCIIRenderer } from '../ui/ascii-renderer';
 import { Player, InventoryItem, Equipment } from '../entities/player';
-import { ItemRarity, ITEMS } from '../config/item-data';
+import { ItemRarity, ITEMS, ItemType, type ItemDefinition, type Potion, type Weapon, type Armor } from '../config/item-data';
 import { EquipmentSystem } from '../systems/equipment-system';
 import { GameMap, Item as GroundItem } from '../world/map';
 import { ModalBackground } from '../ui/modal-background';
@@ -313,15 +313,19 @@ export class InventoryScene extends Phaser.Scene {
     );
     y++;
 
-    // Show stats if it's equipment
-    const itemDef = ITEMS.find((i) => i.id === item.id);
-    if (itemDef && (itemDef.type === 'weapon' || itemDef.type === 'armor')) {
-      if (itemDef.type === 'weapon') {
-        const weaponDef = itemDef as any;
+    // Show stats if it's equipment and identified
+    const itemDef = this.resolveItemDefinition(item);
+    if (itemDef && (itemDef.type === ItemType.WEAPON || itemDef.type === ItemType.ARMOR)) {
+      if (!this.isIdentified(item)) {
+        this.asciiRenderer.drawText(this.detailsStartX, y, 'Properties: Unidentified', 0xffaa00);
+        y++;
+      } else if (itemDef.type === ItemType.WEAPON) {
+        const weaponDef = itemDef as Weapon;
+        const enchantmentBonus = item.enchantmentBonus ?? 0;
         this.asciiRenderer.drawText(
           this.detailsStartX,
           y,
-          `Damage: ${weaponDef.damage} | Bonus: +${weaponDef.attackBonus}`,
+          `Damage: ${weaponDef.damage} | Bonus: +${weaponDef.attackBonus + enchantmentBonus}`,
           0x00ff00
         );
         y++;
@@ -332,12 +336,13 @@ export class InventoryScene extends Phaser.Scene {
           0x00ff00
         );
         y++;
-      } else if (itemDef.type === 'armor') {
-        const armorDef = itemDef as any;
+      } else if (itemDef.type === ItemType.ARMOR) {
+        const armorDef = itemDef as Armor;
+        const enchantmentBonus = item.enchantmentBonus ?? 0;
         this.asciiRenderer.drawText(
           this.detailsStartX,
           y,
-          `Defense: ${armorDef.defense} | AC: ${armorDef.armorClass}`,
+          `Defense: ${armorDef.defense + enchantmentBonus} | AC: ${armorDef.armorClass}`,
           0x00ff00
         );
         y++;
@@ -345,7 +350,11 @@ export class InventoryScene extends Phaser.Scene {
     }
 
     // Description (truncate to fit)
-    const desc = this.getItemDescription(item);
+    const isUnidentifiedEquipment =
+      itemDef !== undefined &&
+      (itemDef.type === ItemType.WEAPON || itemDef.type === ItemType.ARMOR) &&
+      !this.isIdentified(item);
+    const desc = isUnidentifiedEquipment ? 'The item hums with hidden magic.' : this.getItemDescription(item);
     if (desc) {
       this.asciiRenderer.drawText(this.detailsStartX, y, 'Desc: ' + desc.substring(0, 45), 0xaaaaaa);
       y++;
@@ -501,27 +510,43 @@ export class InventoryScene extends Phaser.Scene {
     const item = this.player.inventory[this.selectedSlot];
     if (!item) return;
 
-    // Only potions can be used with current inventory item types
-    if (item.type !== 'potion') {
+    const itemDef = this.resolveItemDefinition(item);
+    if (!itemDef || !('effect' in itemDef)) {
       return;
     }
 
-    // Apply item effect based on type
-    // Handle potion effects
-    const effect = (item as any).effect;
-    switch (effect) {
+    let applied = false;
+    switch (itemDef.effect) {
       case 'restore_health':
-        // Restore health
-        const healthPotency = (item as any).potency || 30;
+        if (itemDef.type !== ItemType.POTION) {
+          return;
+        }
+        const healthPotency = (itemDef as Potion).potency || 30;
         const maxRestorable = this.player.maxHP - this.player.currentHP;
         this.player.currentHP += Math.min(healthPotency * 10, maxRestorable);
+        applied = true;
         break;
       case 'restore_mana':
-        this.player.restoreMana((item as any).potency * 10);
+        if (itemDef.type !== ItemType.POTION) {
+          return;
+        }
+        this.player.restoreMana((itemDef as Potion).potency * 10);
+        applied = true;
         break;
       case 'boost_strength':
         // Could apply temporary status effect
+        applied = true;
         break;
+      case 'identify':
+        applied = this.handleIdentifyEffect(item);
+        break;
+      case 'enchant_weapon':
+        applied = this.handleEnchantWeaponEffect();
+        break;
+    }
+
+    if (!applied) {
+      return;
     }
 
     // Decrease quantity or remove item
@@ -531,6 +556,7 @@ export class InventoryScene extends Phaser.Scene {
       this.player.removeItem(item.id);
     }
 
+    this.onInventoryChanged?.();
     this.draw();
   }
 
@@ -600,6 +626,53 @@ export class InventoryScene extends Phaser.Scene {
     return itemDef?.description || 'No description';
   }
 
+  private resolveItemDefinition(item: InventoryItem): ItemDefinition | undefined {
+    return ITEMS.find((candidate) => candidate.id === item.id);
+  }
+
+  private isIdentified(item: InventoryItem): boolean {
+    return item.identified !== false;
+  }
+
+  private handleIdentifyEffect(consumedItem: InventoryItem): boolean {
+    const toIdentify: InventoryItem[] = [];
+
+    for (const entry of this.player.inventory) {
+      if (entry !== consumedItem && entry.identified === false) {
+        toIdentify.push(entry);
+      }
+    }
+
+    const equipmentSlots: (keyof Equipment)[] = ['weapon', 'armor', 'shield', 'accessory'];
+    for (const slot of equipmentSlots) {
+      const equipped = this.player.equipment[slot];
+      if (equipped && equipped.identified === false) {
+        toIdentify.push(equipped);
+      }
+    }
+
+    if (toIdentify.length === 0) {
+      return false;
+    }
+
+    for (const entry of toIdentify) {
+      entry.identified = true;
+    }
+
+    return true;
+  }
+
+  private handleEnchantWeaponEffect(): boolean {
+    const weapon = this.player.equipment.weapon;
+    if (!weapon) {
+      return false;
+    }
+
+    weapon.enchantmentBonus = (weapon.enchantmentBonus ?? 0) + 1;
+    weapon.identified = true;
+    return true;
+  }
+
   private createGroundItemFromInventoryItem(item: InventoryItem): GroundItem {
     const itemDef = ITEMS.find((i) => i.id === item.id);
     const glyph = itemDef?.glyph ?? '*';
@@ -615,6 +688,8 @@ export class InventoryScene extends Phaser.Scene {
       quantity: item.quantity,
       inventoryType: item.type,
       rarity: item.rarity,
+      identified: item.identified,
+      enchantmentBonus: item.enchantmentBonus,
       isGold: false,
     };
   }
