@@ -6,6 +6,11 @@
 import { Entity } from './Entity';
 import { CHARACTER_CLASSES } from '../config/class-data';
 import { EquipmentSystem } from '../systems/equipment-system';
+import {
+  type StatusEffect,
+  type PlayerStatusEffectType,
+  type PlayerStatusTickEvent,
+} from '../types/status-effects';
 
 // ============================================================================
 // TYPE DEFINITIONS
@@ -24,6 +29,8 @@ export interface InventoryItem {
   rarity: 'common' | 'uncommon' | 'rare' | 'epic' | 'legendary';
   identified?: boolean;
   enchantmentBonus?: number;
+  currentDurability?: number;
+  maxDurability?: number;
 }
 
 /**
@@ -87,6 +94,8 @@ export class Player extends Entity {
   quests: QuestObjective[];
   /** Lockpicking skill (0-100) */
   lockpicking: number;
+  /** Active status effects (poison, regeneration, curses) */
+  private statusEffects: StatusEffect[];
 
   // ============================================================================
   // CONSTRUCTOR
@@ -142,6 +151,7 @@ export class Player extends Entity {
     this.questFlags = new Map<string, boolean>();
     this.quests = [];
     this.lockpicking = this.getStartingLockpickingSkill(playerClass);
+    this.statusEffects = [];
   }
 
   private getStartingLockpickingSkill(playerClass: PlayerClass): number {
@@ -419,6 +429,132 @@ export class Player extends Entity {
    */
   update(): void {
     // Player state updates would go here (e.g., regeneration, status effects)
+  }
+
+  getStatusEffects(): readonly StatusEffect[] {
+    return this.statusEffects;
+  }
+
+  addStatusEffect(effect: StatusEffect): void {
+    if (effect.type === 'phase') {
+      return;
+    }
+
+    const normalizedEffect: StatusEffect = {
+      ...effect,
+      duration: Math.max(1, Math.floor(effect.duration)),
+      power: Math.max(1, Math.floor(effect.power)),
+    };
+
+    const existing = this.statusEffects.find((entry) => entry.type === normalizedEffect.type);
+    if (existing) {
+      if (this.isStatCurse(existing.type) && normalizedEffect.power > existing.power) {
+        this.applyCurseDelta(existing.type, -(normalizedEffect.power - existing.power));
+      }
+      existing.duration = Math.max(existing.duration, normalizedEffect.duration);
+      existing.power = Math.max(existing.power, normalizedEffect.power);
+      return;
+    }
+
+    this.statusEffects.push(normalizedEffect);
+    if (this.isStatCurse(normalizedEffect.type)) {
+      this.applyCurseDelta(normalizedEffect.type, -normalizedEffect.power);
+    }
+  }
+
+  clearStatusEffects(types?: PlayerStatusEffectType[]): number {
+    if (!types || types.length === 0) {
+      const removedCount = this.statusEffects.length;
+      for (const effect of this.statusEffects) {
+        if (this.isStatCurse(effect.type)) {
+          this.applyCurseDelta(effect.type, effect.power);
+        }
+      }
+      this.statusEffects = [];
+      return removedCount;
+    }
+
+    const targetTypes = new Set(types);
+    let removedCount = 0;
+    const remaining: StatusEffect[] = [];
+
+    for (const effect of this.statusEffects) {
+      if (effect.type !== 'phase' && targetTypes.has(effect.type)) {
+        removedCount++;
+        if (this.isStatCurse(effect.type)) {
+          this.applyCurseDelta(effect.type, effect.power);
+        }
+        continue;
+      }
+      remaining.push(effect);
+    }
+
+    this.statusEffects = remaining;
+    return removedCount;
+  }
+
+  processStatusEffects(): PlayerStatusTickEvent[] {
+    if (this.statusEffects.length === 0) {
+      return [];
+    }
+
+    const events: PlayerStatusTickEvent[] = [];
+    const remaining: StatusEffect[] = [];
+
+    for (const effect of this.statusEffects) {
+      switch (effect.type) {
+        case 'poison': {
+          const damage = this.takeDamage(effect.power);
+          if (damage > 0) {
+            events.push({ type: effect.type, amount: damage, kind: 'damage' });
+          }
+          break;
+        }
+        case 'regenerate': {
+          const healed = this.heal(effect.power);
+          if (healed > 0) {
+            events.push({ type: effect.type, amount: healed, kind: 'heal' });
+          }
+          break;
+        }
+        case 'curse_wither': {
+          const damage = this.takeDamage(effect.power);
+          if (damage > 0) {
+            events.push({ type: effect.type, amount: damage, kind: 'damage' });
+          }
+          break;
+        }
+        case 'curse_weakness':
+        case 'curse_frailty':
+        case 'phase':
+          break;
+      }
+
+      effect.duration -= 1;
+      if (effect.duration > 0) {
+        remaining.push(effect);
+      } else if (effect.type !== 'phase') {
+        if (this.isStatCurse(effect.type)) {
+          this.applyCurseDelta(effect.type, effect.power);
+        }
+        events.push({ type: effect.type, amount: 0, kind: 'expired' });
+      }
+    }
+
+    this.statusEffects = remaining;
+    return events;
+  }
+
+  private isStatCurse(type: StatusEffect['type']): type is 'curse_weakness' | 'curse_frailty' {
+    return type === 'curse_weakness' || type === 'curse_frailty';
+  }
+
+  private applyCurseDelta(type: 'curse_weakness' | 'curse_frailty', delta: number): void {
+    if (type === 'curse_weakness') {
+      this.attack = Math.max(1, this.attack + delta);
+      return;
+    }
+    this.defense = Math.max(0, this.defense + delta);
   }
 
   /**

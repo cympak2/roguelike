@@ -6,6 +6,7 @@
 
 import { Player, InventoryItem, Equipment } from '../entities/player';
 import { ItemType, EquipmentSlot, Weapon, Armor, ITEMS } from '../config/item-data';
+import { isBroken } from '../utils/durability';
 
 // ============================================================================
 // TYPE DEFINITIONS
@@ -230,6 +231,7 @@ export class EquipmentSystem {
     for (const slot of equipmentSlots) {
       const item = player.equipment[slot];
       if (!item) continue;
+      if (isBroken(item)) continue;
 
       // Get full item definition
       const itemDef = ITEMS.find((i) => i.id === item.id);
@@ -260,6 +262,7 @@ export class EquipmentSystem {
   public static getAttackBonus(player: Player): number {
     const weapon = player.equipment.weapon;
     if (!weapon) return 0;
+    if (isBroken(weapon)) return 0;
 
     const weaponDef = ITEMS.find((i) => i.id === weapon.id) as Weapon;
     if (!weaponDef || weaponDef.type !== ItemType.WEAPON) return 0;
@@ -277,7 +280,7 @@ export class EquipmentSystem {
 
     // Check armor
     const armor = player.equipment.armor;
-    if (armor) {
+    if (armor && !isBroken(armor)) {
       const armorDef = ITEMS.find((i) => i.id === armor.id) as Armor;
       if (armorDef && armorDef.type === ItemType.ARMOR) {
         defense += armorDef.defense + armorDef.armorClass + (armor.enchantmentBonus ?? 0);
@@ -286,7 +289,7 @@ export class EquipmentSystem {
 
     // Check shield
     const shield = player.equipment.shield;
-    if (shield) {
+    if (shield && !isBroken(shield)) {
       const shieldDef = ITEMS.find((i) => i.id === shield.id) as Armor;
       if (shieldDef && shieldDef.type === ItemType.ARMOR) {
         defense += shieldDef.defense + shieldDef.armorClass + (shield.enchantmentBonus ?? 0);

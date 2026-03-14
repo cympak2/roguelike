@@ -91,6 +91,8 @@ export interface Item {
   rarity?: 'common' | 'uncommon' | 'rare' | 'epic' | 'legendary';
   identified?: boolean;
   enchantmentBonus?: number;
+  currentDurability?: number;
+  maxDurability?: number;
   isGold?: boolean;
   goldAmount?: number;
 }

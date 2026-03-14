@@ -9,6 +9,7 @@ import { Entity } from '../entities/Entity';
 import { GameMap } from '../world/map';
 import { getPathfinder, isPathClear, getDistance } from '../world/pathfinding';
 import type { CombatIntent, MonsterAICondition } from '../types/monster-ai-rules';
+import type { StatusEffect } from '../types/status-effects';
 
 // ============================================================================
 // TYPE DEFINITIONS
@@ -60,15 +61,6 @@ export interface SpecialAbility {
   range?: number;          // Required for ranged abilities
   power?: number;          // Ability strength
   duration?: number;       // For status effects
-}
-
-/**
- * Status effect applied to entities
- */
-export interface StatusEffect {
-  type: 'poison' | 'phase' | 'regenerate';
-  duration: number;        // Turns remaining
-  power: number;           // Effect strength
 }
 
 // ============================================================================
@@ -650,7 +642,7 @@ export class MonsterAISystem {
    * Poison ability: Apply damage-over-time to player
    */
   private executePoison(player: Player, ability: SpecialAbility): void {
-    this.addStatusEffect(player, {
+    player.addStatusEffect({
       type: 'poison',
       duration: ability.duration || 5,
       power: ability.power || 2,
@@ -660,7 +652,7 @@ export class MonsterAISystem {
   /**
    * Steal ability: Take item from player inventory
    */
-  private executeSteal(monster: Monster, player: Player, ability: SpecialAbility): void {
+  private executeSteal(monster: Monster, player: Player, _ability: SpecialAbility): void {
     // Check if player has inventory
     if (typeof (player as any).inventory !== 'undefined') {
       const inventory = (player as any).inventory as any[];

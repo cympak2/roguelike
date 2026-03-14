@@ -19,6 +19,8 @@ import { MonsterSpawnSystem } from '../systems/monster-spawn-system';
 import { ItemSpawnSystem } from '../systems/item-spawn-system';
 import { MonsterAISystem, ActionType } from '../systems/monster-ai-system';
 import { ITEMS, ItemType, type ItemDefinition } from '../config/item-data';
+import { ensureDurability, getMissingDurability } from '../utils/durability';
+import type { PlayerStatusTickEvent } from '../types/status-effects';
 
 interface QuestDefinition {
   id: string;
@@ -130,6 +132,7 @@ const QUEST_DEFINITIONS: Record<string, QuestDefinition> = {
   },
 };
 const HEAL_PLAYER_COST = 0;
+const REPAIR_COST_PER_DURABILITY = 1;
 const BLACKSMITH_RECIPES: Record<string, BlacksmithRecipe> = {
   craft_venomcloak: {
     ingredients: [
@@ -544,6 +547,7 @@ export class GameScene extends Phaser.Scene {
         console.log('Attacking monster:', monster.name);
         const result = this.combatSystem.meleeAttack(this.player, monster);
         this.messageLog.addMessage(result.message, MessageType.COMBAT);
+        this.applyDurabilityWearOnPlayerAttack();
         
         // Handle monster death
           if (result.killed && monster.isDead()) {
@@ -1018,22 +1022,56 @@ export class GameScene extends Phaser.Scene {
     } else if (Math.random() < 0.5) {
       const hpRestored = this.player.heal(Math.max(3, Math.floor(this.player.maxHP * 0.15)));
       const manaRestored = this.player.restoreMana(Math.max(2, Math.floor(this.player.maxMana * 0.2)));
+      this.player.addStatusEffect({
+        type: 'regenerate',
+        duration: 4,
+        power: Math.max(1, Math.floor(this.player.maxHP * 0.04)),
+      });
       this.messageLog.addMessage(
         `A blessed surge revitalizes you (+${hpRestored} HP, +${manaRestored} mana).`,
         MessageType.HEAL
       );
+      this.messageLog.addMessage('A regenerative blessing settles over you.', MessageType.INFO);
     } else if (this.player.currentHP <= 1) {
       const manaLoss = Math.min(this.player.currentMana, 3 + Math.floor(Math.random() * 4));
       this.player.currentMana -= manaLoss;
+      this.player.addStatusEffect({
+        type: 'curse_weakness',
+        duration: 5,
+        power: 2,
+      });
       this.messageLog.addMessage(
         `Bitter water drains your spirit (-${manaLoss} mana).`,
         MessageType.WARNING
       );
+      this.messageLog.addMessage('A curse of weakness saps your strength.', MessageType.WARNING);
     } else {
       const maxSafeDamage = this.player.currentHP - 1;
       const damage = Math.min(maxSafeDamage, 4 + Math.floor(Math.random() * 7));
       this.player.takeDamage(damage);
       this.messageLog.addMessage(`The water is tainted! You suffer ${damage} damage.`, MessageType.DAMAGE);
+
+      if (Math.random() < 0.5) {
+        this.player.addStatusEffect({
+          type: 'poison',
+          duration: 4,
+          power: 2,
+        });
+        this.messageLog.addMessage('Toxic residue poisons you.', MessageType.WARNING);
+      } else {
+        const curses: Array<'curse_frailty' | 'curse_wither'> = ['curse_frailty', 'curse_wither'];
+        const curseType = curses[Math.floor(Math.random() * curses.length)];
+        this.player.addStatusEffect({
+          type: curseType,
+          duration: 5,
+          power: 2,
+        });
+        if (curseType === 'curse_frailty') {
+          this.messageLog.addMessage('A curse of frailty weakens your defenses.', MessageType.WARNING);
+        } else {
+          this.messageLog.addMessage('A withering curse clings to you.', MessageType.WARNING);
+        }
+      }
     }
 
     this.processTurn();
@@ -1163,6 +1201,12 @@ export class GameScene extends Phaser.Scene {
   }
   
   private processTurn(): void {
+    this.processPlayerStatusEffects();
+    if (this.player.isDead()) {
+      this.handlePlayerDeath();
+      return;
+    }
+
     // Clean up dead monsters
     this.monsters = this.monsters.filter(m => !m.isDead());
     
@@ -1200,6 +1244,49 @@ export class GameScene extends Phaser.Scene {
     this.render();
   }
 
+  private processPlayerStatusEffects(): void {
+    const events = this.player.processStatusEffects();
+    for (const event of events) {
+      this.logPlayerStatusEvent(event);
+    }
+  }
+
+  private logPlayerStatusEvent(event: PlayerStatusTickEvent): void {
+    switch (event.type) {
+      case 'poison':
+        if (event.kind === 'damage' && event.amount > 0) {
+          this.messageLog.addMessage(`Poison deals ${event.amount} damage.`, MessageType.DAMAGE);
+        } else if (event.kind === 'expired') {
+          this.messageLog.addMessage('The poison wears off.', MessageType.INFO);
+        }
+        break;
+      case 'regenerate':
+        if (event.kind === 'heal' && event.amount > 0) {
+          this.messageLog.addMessage(`Regeneration restores ${event.amount} HP.`, MessageType.HEAL);
+        } else if (event.kind === 'expired') {
+          this.messageLog.addMessage('Your regeneration fades.', MessageType.INFO);
+        }
+        break;
+      case 'curse_weakness':
+        if (event.kind === 'expired') {
+          this.messageLog.addMessage('The curse of weakness is lifted.', MessageType.INFO);
+        }
+        break;
+      case 'curse_frailty':
+        if (event.kind === 'expired') {
+          this.messageLog.addMessage('The curse of frailty is lifted.', MessageType.INFO);
+        }
+        break;
+      case 'curse_wither':
+        if (event.kind === 'damage' && event.amount > 0) {
+          this.messageLog.addMessage(`A withering curse drains ${event.amount} HP.`, MessageType.WARNING);
+        } else if (event.kind === 'expired') {
+          this.messageLog.addMessage('The withering curse dissipates.', MessageType.INFO);
+        }
+        break;
+    }
+  }
+
   private handleDialogueAction(payload: {
     action: string;
     npcId: string | null;
@@ -1220,6 +1307,11 @@ export class GameScene extends Phaser.Scene {
 
     if (payload.action === 'heal_player') {
       this.applyHealerService();
+      return;
+    }
+
+    if (payload.action === 'repair_equipment') {
+      this.applyBlacksmithRepair();
       return;
     }
 
@@ -1286,6 +1378,103 @@ export class GameScene extends Phaser.Scene {
     }
 
     this.render();
+  }
+
+  private applyBlacksmithRepair(): void {
+    if (this.currentFloor !== 0) {
+      this.messageLog.addMessage('Repairs are only available in town.', MessageType.SYSTEM);
+      this.render();
+      return;
+    }
+
+    const equipmentSlots: ('weapon' | 'armor' | 'shield' | 'accessory')[] = ['weapon', 'armor', 'shield', 'accessory'];
+    const equippedItems = equipmentSlots
+      .map((slot) => this.player.equipment[slot])
+      .filter((item): item is NonNullable<typeof item> => item !== undefined);
+    for (const item of equippedItems) {
+      const itemDef = ITEMS.find((entry) => entry.id === item.id);
+      ensureDurability(item, itemDef);
+    }
+    const damagedItems = equippedItems.filter(
+      (item) => item.maxDurability !== undefined && getMissingDurability(item) > 0
+    );
+
+    if (damagedItems.length === 0) {
+      this.messageLog.addMessage('Your equipment does not need repairs.', MessageType.SYSTEM);
+      this.render();
+      return;
+    }
+
+    const totalMissingDurability = damagedItems.reduce(
+      (sum, item) => sum + getMissingDurability(item),
+      0
+    );
+    const repairCost = Math.max(10, Math.ceil(totalMissingDurability * REPAIR_COST_PER_DURABILITY));
+
+    if (!this.player.spendGold(repairCost)) {
+      this.messageLog.addMessage(
+        `Hilda charges ${repairCost} gold for repairs. You cannot afford it.`,
+        MessageType.SYSTEM
+      );
+      this.render();
+      return;
+    }
+
+    for (const item of damagedItems) {
+      item.currentDurability = item.maxDurability;
+    }
+
+    this.messageLog.addMessage(
+      `Hilda repairs ${damagedItems.length} item(s) for ${repairCost} gold.`,
+      MessageType.SYSTEM
+    );
+    this.render();
+  }
+
+  private applyDurabilityWearOnPlayerAttack(): void {
+    this.damageEquippedItem('weapon', 1, 'Your weapon breaks from wear!');
+  }
+
+  private applyDurabilityWearOnPlayerDefense(): void {
+    const candidates: ('armor' | 'shield')[] = [];
+    if (this.player.equipment.armor) {
+      candidates.push('armor');
+    }
+    if (this.player.equipment.shield) {
+      candidates.push('shield');
+    }
+    if (candidates.length === 0) {
+      return;
+    }
+
+    const slot = candidates[Math.floor(Math.random() * candidates.length)];
+    const brokenItemName = this.player.equipment[slot]?.name ?? 'equipment';
+    this.damageEquippedItem(slot, 1, `Your ${brokenItemName} is broken and needs repair!`);
+  }
+
+  private damageEquippedItem(
+    slot: 'weapon' | 'armor' | 'shield' | 'accessory',
+    amount: number,
+    brokenMessage: string
+  ): void {
+    const equipped = this.player.equipment[slot];
+    if (!equipped || amount <= 0) {
+      return;
+    }
+
+    const itemDef = ITEMS.find((item) => item.id === equipped.id);
+    ensureDurability(equipped, itemDef);
+    if (equipped.maxDurability === undefined) {
+      return;
+    }
+
+    const previousDurability = equipped.currentDurability ?? equipped.maxDurability;
+    const nextDurability = Math.max(0, previousDurability - amount);
+    equipped.currentDurability = nextDurability;
+
+    if (previousDurability > 0 && nextDurability === 0) {
+      this.messageLog.addMessage(brokenMessage, MessageType.WARNING);
+    }
   }
 
   private applyBlacksmithCrafting(actionId: string): void {
@@ -1401,8 +1590,10 @@ export class GameScene extends Phaser.Scene {
     rarity: 'common' | 'uncommon' | 'rare' | 'epic' | 'legendary';
     identified?: boolean;
     enchantmentBonus?: number;
+    currentDurability?: number;
+    maxDurability?: number;
   } {
-    return {
+    const inventoryItem = {
       id: itemDef.id,
       name: itemDef.name,
       type: this.mapItemTypeToInventoryType(itemDef.type),
@@ -1410,6 +1601,8 @@ export class GameScene extends Phaser.Scene {
       rarity: itemDef.rarity,
       identified: true,
     };
+    ensureDurability(inventoryItem, itemDef);
+    return inventoryItem;
   }
 
   private mapItemTypeToInventoryType(type: ItemType): 'weapon' | 'armor' | 'potion' | 'misc' {
@@ -1443,6 +1636,7 @@ export class GameScene extends Phaser.Scene {
       case ActionType.MELEE_ATTACK: {
         const result = this.combatSystem.meleeAttack(monster, this.player);
         this.messageLog.addMessage(result.message, MessageType.COMBAT);
+        this.applyDurabilityWearOnPlayerDefense();
         break;
       }
       case ActionType.RANGED_ATTACK: {
@@ -1451,6 +1645,7 @@ export class GameScene extends Phaser.Scene {
         const distance = Math.sqrt(dx * dx + dy * dy);
         const result = this.combatSystem.rangedAttack(monster, this.player, distance);
         this.messageLog.addMessage(result.message, MessageType.COMBAT);
+        this.applyDurabilityWearOnPlayerDefense();
         break;
       }
       case ActionType.MOVE:
@@ -1564,6 +1759,8 @@ export class GameScene extends Phaser.Scene {
     rarity: 'common' | 'uncommon' | 'rare' | 'epic' | 'legendary';
     identified?: boolean;
     enchantmentBonus?: number;
+    currentDurability?: number;
+    maxDurability?: number;
   } {
     const itemDef = ITEMS.find((entry) => entry.id === item.id);
     const isPotentiallyMagicalEquipment =
@@ -1571,7 +1768,7 @@ export class GameScene extends Phaser.Scene {
       (itemDef.type === ItemType.WEAPON || itemDef.type === ItemType.ARMOR) &&
       (item.rarity === 'rare' || item.rarity === 'epic' || item.rarity === 'legendary');
 
-    return {
+    const inventoryItem = {
       id: item.id,
       name: item.name,
       type: item.inventoryType ?? 'misc',
@@ -1579,7 +1776,11 @@ export class GameScene extends Phaser.Scene {
       rarity: item.rarity ?? 'common',
       identified: item.identified ?? (isPotentiallyMagicalEquipment ? false : true),
       enchantmentBonus: item.enchantmentBonus,
+      currentDurability: item.currentDurability,
+      maxDurability: item.maxDurability,
     };
+    ensureDurability(inventoryItem, itemDef);
+    return inventoryItem;
   }
 
   private autoCollectGoldAt(x: number, y: number): void {

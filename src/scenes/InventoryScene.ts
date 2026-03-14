@@ -3,6 +3,7 @@ import { ASCIIRenderer } from '../ui/ascii-renderer';
 import { Player, InventoryItem, Equipment } from '../entities/player';
 import { ItemRarity, ITEMS, ItemType, type ItemDefinition, type Potion, type Weapon, type Armor } from '../config/item-data';
 import { EquipmentSystem } from '../systems/equipment-system';
+import { isBroken } from '../utils/durability';
 import { GameMap, Item as GroundItem } from '../world/map';
 import { ModalBackground } from '../ui/modal-background';
 
@@ -347,6 +348,18 @@ export class InventoryScene extends Phaser.Scene {
         );
         y++;
       }
+
+      if (item.maxDurability !== undefined) {
+        const currentDurability = Math.max(0, item.currentDurability ?? item.maxDurability);
+        const durabilityColor = isBroken(item) ? 0xff5555 : 0x88ddff;
+        this.asciiRenderer.drawText(
+          this.detailsStartX,
+          y,
+          `Durability: ${currentDurability}/${item.maxDurability}`,
+          durabilityColor
+        );
+        y++;
+      }
     }
 
     // Description (truncate to fit)
@@ -537,6 +550,13 @@ export class InventoryScene extends Phaser.Scene {
         // Could apply temporary status effect
         applied = true;
         break;
+      case 'cure_poison':
+        if (itemDef.type !== ItemType.POTION) {
+          return;
+        }
+        this.player.clearStatusEffects(['poison']);
+        applied = true;
+        break;
       case 'identify':
         applied = this.handleIdentifyEffect(item);
         break;
@@ -690,6 +710,8 @@ export class InventoryScene extends Phaser.Scene {
       rarity: item.rarity,
       identified: item.identified,
       enchantmentBonus: item.enchantmentBonus,
+      currentDurability: item.currentDurability,
+      maxDurability: item.maxDurability,
       isGold: false,
     };
   }

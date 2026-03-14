@@ -3,6 +3,7 @@ import { ASCIIRenderer } from '../ui/ascii-renderer';
 import { ModalBackground } from '../ui/modal-background';
 import { Player, type InventoryItem } from '../entities/player';
 import { ITEMS, ItemType, type ItemDefinition } from '../config/item-data';
+import { ensureDurability } from '../utils/durability';
 
 interface ShopSceneInitData {
   player?: Player;
@@ -122,6 +123,7 @@ export class ShopScene extends Phaser.Scene {
       quantity: 1,
       rarity: item.rarity,
     };
+    ensureDurability(inventoryItem, item);
 
     if (!this.player.addItem(inventoryItem)) {
       this.player.addGold(price);
