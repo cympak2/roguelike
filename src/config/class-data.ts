@@ -38,12 +38,31 @@ export interface StartingEquipment {
   accessory?: string;
 }
 
+export interface TalentBonus {
+  attack?: number;
+  defense?: number;
+  maxHP?: number;
+  maxMana?: number;
+  magicPower?: number;
+  speed?: number;
+  lockpicking?: number;
+}
+
+export interface ClassTalent {
+  id: string;
+  name: string;
+  unlockLevel: 3 | 5 | 7;
+  description: string;
+  bonus: TalentBonus;
+}
+
 export interface CharacterClass {
   id: string;
   name: string;
   description: string;
   baseStats: ClassStats;
   abilities: ClassAbility[];
+  talents: ClassTalent[];
   startingEquipment: StartingEquipment;
   primaryStat: 'attack' | 'defense' | 'magicPower';
   classColor: number;
@@ -104,6 +123,29 @@ export const WARRIOR: CharacterClass = {
       damage: 6,
       range: 1,
       area: 1,
+    },
+  ],
+  talents: [
+    {
+      id: 'warrior_bulwark',
+      name: 'Iron Bulwark',
+      unlockLevel: 3,
+      description: '+2 defense and +12 max HP',
+      bonus: { defense: 2, maxHP: 12 },
+    },
+    {
+      id: 'warrior_battle_focus',
+      name: 'Battle Focus',
+      unlockLevel: 5,
+      description: '+3 attack',
+      bonus: { attack: 3 },
+    },
+    {
+      id: 'warrior_legendary_endurance',
+      name: 'Legendary Endurance',
+      unlockLevel: 7,
+      description: '+20 max HP and +1 speed',
+      bonus: { maxHP: 20, speed: 1 },
     },
   ],
   startingEquipment: {
@@ -169,6 +211,29 @@ export const MAGE: CharacterClass = {
       area: 1,
     },
   ],
+  talents: [
+    {
+      id: 'mage_mana_well',
+      name: 'Mana Well',
+      unlockLevel: 3,
+      description: '+20 max mana',
+      bonus: { maxMana: 20 },
+    },
+    {
+      id: 'mage_arcane_mastery',
+      name: 'Arcane Mastery',
+      unlockLevel: 5,
+      description: '+3 magic power',
+      bonus: { magicPower: 3 },
+    },
+    {
+      id: 'mage_spellward',
+      name: 'Spellward',
+      unlockLevel: 7,
+      description: '+2 defense and +15 max mana',
+      bonus: { defense: 2, maxMana: 15 },
+    },
+  ],
   startingEquipment: {
     weapon: 'wooden_staff',
     armor: 'mage_robe',
@@ -226,6 +291,29 @@ export const ROGUE: CharacterClass = {
       cooldown: 3,
       damage: 15,
       range: 1,
+    },
+  ],
+  talents: [
+    {
+      id: 'rogue_quickstep',
+      name: 'Quickstep',
+      unlockLevel: 3,
+      description: '+1 speed and +10 lockpicking',
+      bonus: { speed: 1, lockpicking: 10 },
+    },
+    {
+      id: 'rogue_deadly_precision',
+      name: 'Deadly Precision',
+      unlockLevel: 5,
+      description: '+3 attack',
+      bonus: { attack: 3 },
+    },
+    {
+      id: 'rogue_elusive_guard',
+      name: 'Elusive Guard',
+      unlockLevel: 7,
+      description: '+2 defense and +1 speed',
+      bonus: { defense: 2, speed: 1 },
     },
   ],
   startingEquipment: {

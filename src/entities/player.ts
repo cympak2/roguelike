@@ -4,7 +4,7 @@
  */
 
 import { Entity } from './Entity';
-import { CHARACTER_CLASSES } from '../config/class-data';
+import { CHARACTER_CLASSES, type ClassTalent } from '../config/class-data';
 import { EquipmentSystem } from '../systems/equipment-system';
 import {
   type StatusEffect,
@@ -48,6 +48,12 @@ export interface QuestObjective {
   title: string;
   objective: string;
   completed: boolean;
+}
+
+export interface ExperienceGainResult {
+  xpGained: number;
+  levelsGained: number;
+  unlockedTalents: ClassTalent[];
 }
 
 // ============================================================================
@@ -96,6 +102,8 @@ export class Player extends Entity {
   lockpicking: number;
   /** Active status effects (poison, regeneration, curses) */
   private statusEffects: StatusEffect[];
+  /** Already unlocked class talent IDs */
+  private unlockedTalentIds: Set<string>;
 
   // ============================================================================
   // CONSTRUCTOR
@@ -152,6 +160,7 @@ export class Player extends Entity {
     this.quests = [];
     this.lockpicking = this.getStartingLockpickingSkill(playerClass);
     this.statusEffects = [];
+    this.unlockedTalentIds = new Set();
   }
 
   private getStartingLockpickingSkill(playerClass: PlayerClass): number {
@@ -184,11 +193,37 @@ export class Player extends Entity {
   /**
    * Gain experience points
    * NOTE: This method only adds XP and does NOT trigger level-ups.
-   * Use XPSystem.awardXP() instead for full leveling functionality with stat choices.
+   * Use gainXPAndResolveProgression() in gameplay flow when level/talent unlocks are needed.
    * @param amount - XP amount to gain
    */
   gainXP(amount: number): void {
     this.xp += amount;
+  }
+
+  gainXPAndResolveProgression(amount: number): ExperienceGainResult {
+    const normalizedAmount = Math.max(0, Math.floor(amount));
+    this.xp += normalizedAmount;
+
+    const unlockedTalents: ClassTalent[] = [];
+    let levelsGained = 0;
+
+    while (this.xp >= this.xpForNextLevel) {
+      this.xp -= this.xpForNextLevel;
+      this.level++;
+      levelsGained++;
+      this.xpForNextLevel = this.calculateXpForLevel(this.level + 1);
+
+      this.currentHP = this.maxHP;
+      this.currentMana = this.maxMana;
+
+      unlockedTalents.push(...this.unlockTalentsForLevel(this.level));
+    }
+
+    return {
+      xpGained: normalizedAmount,
+      levelsGained,
+      unlockedTalents,
+    };
   }
 
   // ============================================================================
@@ -555,6 +590,49 @@ export class Player extends Entity {
       return;
     }
     this.defense = Math.max(0, this.defense + delta);
+  }
+
+  getUnlockedTalentIds(): readonly string[] {
+    return Array.from(this.unlockedTalentIds);
+  }
+
+  private unlockTalentsForLevel(level: number): ClassTalent[] {
+    const classData = CHARACTER_CLASSES[this.playerClass];
+    if (!classData) {
+      return [];
+    }
+
+    const newlyUnlocked: ClassTalent[] = [];
+    for (const talent of classData.talents) {
+      if (talent.unlockLevel > level || this.unlockedTalentIds.has(talent.id)) {
+        continue;
+      }
+
+      this.applyTalentBonus(talent);
+      this.unlockedTalentIds.add(talent.id);
+      newlyUnlocked.push(talent);
+    }
+
+    return newlyUnlocked;
+  }
+
+  private applyTalentBonus(talent: ClassTalent): void {
+    const bonus = talent.bonus;
+    this.attack += bonus.attack ?? 0;
+    this.defense = Math.max(0, this.defense + (bonus.defense ?? 0));
+    this.magicPower = Math.max(0, this.magicPower + (bonus.magicPower ?? 0));
+    this.speed += bonus.speed ?? 0;
+    this.lockpicking = Math.max(0, Math.min(100, this.lockpicking + (bonus.lockpicking ?? 0)));
+
+    if (bonus.maxHP) {
+      this.maxHP = Math.max(1, this.maxHP + bonus.maxHP);
+      this.currentHP = Math.min(this.maxHP, this.currentHP + bonus.maxHP);
+    }
+
+    if (bonus.maxMana) {
+      this.maxMana = Math.max(0, this.maxMana + bonus.maxMana);
+      this.currentMana = Math.min(this.maxMana, this.currentMana + bonus.maxMana);
+    }
   }
 
   /**

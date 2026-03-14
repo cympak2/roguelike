@@ -558,9 +558,8 @@ export class GameScene extends Phaser.Scene {
             
             // Award XP to player
             if (monster.xpReward) {
-            this.player.gainXP(monster.xpReward);
-            this.messageLog.addMessage(`You gain ${monster.xpReward} XP!`, MessageType.SYSTEM);
-          }
+              this.awardPlayerXP(monster.xpReward);
+            }
         }
         
         // Monster attacked, so process monster turns
@@ -1242,6 +1241,29 @@ export class GameScene extends Phaser.Scene {
     
     // Render after all monsters have acted
     this.render();
+  }
+
+  private awardPlayerXP(amount: number): void {
+    const progression = this.player.gainXPAndResolveProgression(amount);
+    if (progression.xpGained <= 0) {
+      return;
+    }
+
+    this.messageLog.addMessage(`You gain ${progression.xpGained} XP!`, MessageType.SYSTEM);
+
+    if (progression.levelsGained > 0) {
+      this.messageLog.addMessage(
+        `*** LEVEL UP! You are now level ${this.player.level}! ***`,
+        MessageType.SYSTEM
+      );
+    }
+
+    for (const talent of progression.unlockedTalents) {
+      this.messageLog.addMessage(
+        `Talent unlocked: ${talent.name} (${talent.description}).`,
+        MessageType.INFO
+      );
+    }
   }
 
   private processPlayerStatusEffects(): void {
