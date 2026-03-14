@@ -31,6 +31,7 @@ export interface DialogueOption {
   id: string;
   text: string;
   nextDialogueId?: string;
+  actionId?: string;
   action?: () => void;
 }
 
@@ -64,6 +65,12 @@ export class NPC extends Entity {
   isInteractable: boolean;
   /** Interaction range (in grid units) */
   interactionRange: number;
+  /** Source NPC definition identifier */
+  definitionId?: string;
+  /** Quest IDs this NPC can offer */
+  questIds: string[];
+  /** Item IDs sold by this NPC */
+  shopInventoryIds: string[];
 
   // ============================================================================
   // CONSTRUCTOR
@@ -107,6 +114,8 @@ export class NPC extends Entity {
     this.isInteractable = true;
     this.interactionRange = 2;
     this.dialogues = new Map();
+    this.questIds = [];
+    this.shopInventoryIds = [];
   }
 
   // ============================================================================

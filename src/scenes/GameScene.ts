@@ -9,7 +9,7 @@ import {
   NPCType as ConfigNPCType,
   type NPCDefinition,
 } from '../config/npc-data';
-import { GameMap, TileType, type Item as GroundItem } from '../world/map';
+import { GameMap, TileType, type Item as GroundItem, type Trap } from '../world/map';
 import { TownGenerator, type NPCSpawnPoint } from '../world/town-gen';
 import { DungeonGenerator } from '../world/dungeon-gen';
 import { fovSystem } from '../world/fov';
@@ -19,6 +19,12 @@ import { MonsterSpawnSystem } from '../systems/monster-spawn-system';
 import { ItemSpawnSystem } from '../systems/item-spawn-system';
 import { MonsterAISystem, ActionType } from '../systems/monster-ai-system';
 
+interface QuestDefinition {
+  id: string;
+  title: string;
+  objective: string;
+}
+
 type DungeonGenerationMode = 'persistent' | 'regenerating';
 
 interface DungeonFloorState {
@@ -26,6 +32,91 @@ interface DungeonFloorState {
   monsters: Monster[];
   npcs: NPC[];
 }
+
+interface AltarStatDelta {
+  attack?: number;
+  defense?: number;
+  maxHP?: number;
+  maxMana?: number;
+  magicPower?: number;
+}
+
+interface AltarEffect {
+  id: string;
+  name: string;
+  description: string;
+  delta: AltarStatDelta;
+}
+
+interface ActiveAltarPact {
+  floor: number;
+  boon: AltarEffect;
+  curse: AltarEffect;
+  appliedDelta: AltarStatDelta;
+}
+
+const ALTAR_BOONS: AltarEffect[] = [
+  {
+    id: 'boon_might',
+    name: 'Blessing of Might',
+    description: '+3 attack',
+    delta: { attack: 3 },
+  },
+  {
+    id: 'boon_warding',
+    name: 'Blessing of Warding',
+    description: '+2 defense',
+    delta: { defense: 2 },
+  },
+  {
+    id: 'boon_vitality',
+    name: 'Blessing of Vitality',
+    description: '+12 max HP',
+    delta: { maxHP: 12 },
+  },
+  {
+    id: 'boon_sorcery',
+    name: 'Blessing of Sorcery',
+    description: '+3 magic power, +8 max mana',
+    delta: { magicPower: 3, maxMana: 8 },
+  },
+];
+
+const ALTAR_CURSES: AltarEffect[] = [
+  {
+    id: 'curse_weakness',
+    name: 'Curse of Weakness',
+    description: '-2 attack',
+    delta: { attack: -2 },
+  },
+  {
+    id: 'curse_frailty',
+    name: 'Curse of Frailty',
+    description: '-2 defense',
+    delta: { defense: -2 },
+  },
+  {
+    id: 'curse_withering',
+    name: 'Curse of Withering',
+    description: '-10 max HP',
+    delta: { maxHP: -10 },
+  },
+  {
+    id: 'curse_drain',
+    name: 'Curse of Arcane Drain',
+    description: '-1 magic power, -6 max mana',
+    delta: { magicPower: -1, maxMana: -6 },
+  },
+];
+
+const QUEST_DEFINITIONS: Record<string, QuestDefinition> = {
+  clear_dungeon_level_1: {
+    id: 'clear_dungeon_level_1',
+    title: 'Elder Aldric\'s Plea',
+    objective: 'Clear all monsters on dungeon level 1.',
+  },
+};
+const HEAL_PLAYER_COST = 0;
 
 export class GameScene extends Phaser.Scene {
   private asciiRenderer!: ASCIIRenderer;
@@ -51,6 +142,12 @@ export class GameScene extends Phaser.Scene {
   private pickupSelectionItems: GroundItem[] = [];
   private pickupSelectionIndex: number = 0;
   private pickupOverlay?: Phaser.GameObjects.Text;
+  private altarSelectionIndex: number = 0;
+  private altarOverlay?: Phaser.GameObjects.Text;
+  private pendingAltarOffer?: { boon: AltarEffect; curse: AltarEffect };
+  private activeAltarPact?: ActiveAltarPact;
+  private altarUsedFloors = new Set<number>();
+  private altarOffersByFloor = new Map<number, { boon: AltarEffect; curse: AltarEffect }>();
 
   constructor() {
     super({ key: 'GameScene' });
@@ -140,11 +237,14 @@ export class GameScene extends Phaser.Scene {
     // Use a global keydown listener so input can wake the game loop from idle sleep
     window.addEventListener('keydown', this.onWindowKeyDown, { passive: false });
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      this.events.off('dialogue-action', this.handleDialogueAction, this);
       this.cleanupInputAndSleep();
     });
     this.events.once(Phaser.Scenes.Events.DESTROY, () => {
+      this.events.off('dialogue-action', this.handleDialogueAction, this);
       this.cleanupInputAndSleep();
     });
+    this.events.on('dialogue-action', this.handleDialogueAction, this);
     console.log('Global keyboard input registered');
 
     // Setup visibility based on floor
@@ -196,6 +296,10 @@ export class GameScene extends Phaser.Scene {
       this.pickupOverlay.destroy();
       this.pickupOverlay = undefined;
     }
+    if (this.altarOverlay) {
+      this.altarOverlay.destroy();
+      this.altarOverlay = undefined;
+    }
   }
 
   private onWindowKeyDown = (event: KeyboardEvent): void => {
@@ -209,6 +313,12 @@ export class GameScene extends Phaser.Scene {
 
     if (this.isPickupSelectionActive()) {
       this.handlePickupSelectionKey(event.key);
+      event.preventDefault();
+      return;
+    }
+
+    if (this.isAltarSelectionActive()) {
+      this.handleAltarSelectionKey(event.key);
       event.preventDefault();
       return;
     }
@@ -227,6 +337,9 @@ export class GameScene extends Phaser.Scene {
       key === 'g' ||
       key === 'i' ||
       key === 'b' ||
+      key === 'f' ||
+      key === 'x' ||
+      key === 'r' ||
       key === '<' ||
       key === '>'
     );
@@ -243,6 +356,7 @@ export class GameScene extends Phaser.Scene {
   private isOverlaySceneActive(): boolean {
     return (
       this.scene.isActive('DialogueScene') ||
+      this.scene.isActive('ShopScene') ||
       this.scene.isActive('InventoryScene') ||
       this.scene.isActive('MainMenuScene') ||
       this.scene.isActive('GameOverScene')
@@ -326,6 +440,15 @@ export class GameScene extends Phaser.Scene {
       case 'b':
         this.tryBreakStickFromNearbyTree();
         return;
+      case 'f':
+        this.tryDrinkFromFountain();
+        return;
+      case 'x':
+        this.tryDisarmNearbyTrap();
+        return;
+      case 'r':
+        this.tryUseAltar();
+        return;
       case '<':
         this.tryUseStairs('up');
         return;
@@ -391,6 +514,8 @@ export class GameScene extends Phaser.Scene {
         this.messageLog.addMessage('You open the door.', MessageType.SYSTEM);
         console.log('Opened door at', newX, newY);
         this.render();
+      } else if (tile && tile.type === TileType.CHEST_CLOSED) {
+        this.tryOpenChest(newX, newY);
       } else if (tile && tile.type === TileType.TREE) {
         this.messageLog.addMessage('A tree blocks your path. Press B near it to break a stick.', MessageType.SYSTEM);
       } else {
@@ -412,6 +537,9 @@ export class GameScene extends Phaser.Scene {
     this.player.setPosition(newX, newY);
     console.log('Player moved to', newX, newY);
 
+    const trapTriggered = this.tryTriggerTrapAt(newX, newY);
+    this.revealNearbyTraps(newX, newY);
+
     this.autoCollectGoldAt(newX, newY);
     
     // Check for items at new position
@@ -420,6 +548,13 @@ export class GameScene extends Phaser.Scene {
       const itemNames = items.map(item => item.name).join(', ');
       this.messageLog.addMessage(`You see: ${itemNames}`, MessageType.SYSTEM);
       console.log('Items at position:', itemNames);
+    }
+
+    if (tile.type === TileType.ALTAR && this.currentFloor > 0 && !this.altarUsedFloors.has(this.currentFloor)) {
+      this.messageLog.addMessage(
+        'An altar hums with power. Press R to accept a boon and a curse.',
+        MessageType.WARNING
+      );
     }
     
     // Update FOV (town doesn't need FOV recalculation since all tiles are always visible)
@@ -440,9 +575,124 @@ export class GameScene extends Phaser.Scene {
       const fovRadius = 10;
       fovSystem.compute(this.gameMap, newX, newY, fovRadius);
     }
-    
+
+    if (trapTriggered && this.player.isDead()) {
+      this.handlePlayerDeath();
+      return;
+    }
+
     // Process monster turns after player movement
     this.processTurn();
+  }
+
+  private tryTriggerTrapAt(x: number, y: number): boolean {
+    const trap = this.getTrapAtSafe(x, y);
+    if (!trap || trap.disarmed) {
+      return false;
+    }
+
+    trap.revealed = true;
+    const damage = this.player.takeDamage(trap.damage);
+    this.messageLog.addMessage(
+      `You trigger a spike trap and take ${damage} damage!`,
+      MessageType.DAMAGE
+    );
+    return true;
+  }
+
+  private revealNearbyTraps(x: number, y: number): void {
+    const nearby = this.getAdjacentTrapsSafe(x, y);
+    for (const trap of nearby) {
+      if (trap.revealed || trap.disarmed) {
+        continue;
+      }
+      if (Math.random() < 0.35) {
+        trap.revealed = true;
+        this.messageLog.addMessage('You spot a hidden spike trap nearby.', MessageType.SYSTEM);
+      }
+    }
+  }
+
+  private tryDisarmNearbyTrap(): void {
+    if (this.currentFloor === 0) {
+      this.messageLog.addMessage('No traps to disarm in town.', MessageType.SYSTEM);
+      this.render();
+      return;
+    }
+
+    const candidates = this.getAdjacentTrapsSafe(this.player.x, this.player.y)
+      .filter((trap) => trap.revealed && !trap.disarmed);
+
+    if (candidates.length === 0) {
+      this.messageLog.addMessage('No revealed trap nearby to disarm.', MessageType.SYSTEM);
+      this.render();
+      return;
+    }
+
+    const trap = candidates[0];
+    const disarmChance = 0.7;
+    if (Math.random() <= disarmChance) {
+      this.disarmTrapAtSafe(trap.x, trap.y);
+      this.messageLog.addMessage('You carefully disarm a spike trap.', MessageType.SYSTEM);
+    } else {
+      const damage = this.player.takeDamage(Math.max(1, Math.floor(trap.damage / 2)));
+      trap.revealed = true;
+      this.messageLog.addMessage(`Disarm failed! The trap wounds you for ${damage} damage.`, MessageType.DAMAGE);
+      if (this.player.isDead()) {
+        this.handlePlayerDeath();
+        return;
+      }
+    }
+
+    this.processTurn();
+  }
+
+  private getTrapsArraySafe(): Trap[] {
+    return Array.isArray(this.gameMap.traps) ? this.gameMap.traps : [];
+  }
+
+  private getTrapAtSafe(x: number, y: number): Trap | null {
+    const mapWithTrapMethods = this.gameMap as GameMap & {
+      getTrapAt?: (x: number, y: number) => Trap | null;
+    };
+    if (typeof mapWithTrapMethods.getTrapAt === 'function') {
+      return mapWithTrapMethods.getTrapAt(x, y);
+    }
+
+    return this.getTrapsArraySafe().find((trap) => trap.x === x && trap.y === y && !trap.disarmed) ?? null;
+  }
+
+  private getAdjacentTrapsSafe(x: number, y: number): Trap[] {
+    const mapWithTrapMethods = this.gameMap as GameMap & {
+      getAdjacentTraps?: (x: number, y: number) => Trap[];
+    };
+    if (typeof mapWithTrapMethods.getAdjacentTraps === 'function') {
+      return mapWithTrapMethods.getAdjacentTraps(x, y);
+    }
+
+    return this.getTrapsArraySafe().filter((trap) => {
+      if (trap.disarmed) return false;
+      const dx = Math.abs(trap.x - x);
+      const dy = Math.abs(trap.y - y);
+      return Math.max(dx, dy) <= 1;
+    });
+  }
+
+  private disarmTrapAtSafe(x: number, y: number): boolean {
+    const mapWithTrapMethods = this.gameMap as GameMap & {
+      disarmTrapAt?: (x: number, y: number) => boolean;
+    };
+    if (typeof mapWithTrapMethods.disarmTrapAt === 'function') {
+      return mapWithTrapMethods.disarmTrapAt(x, y);
+    }
+
+    const trap = this.getTrapAtSafe(x, y);
+    if (!trap) {
+      return false;
+    }
+    trap.disarmed = true;
+    trap.revealed = true;
+    return true;
   }
 
   private tryUseStairs(direction: 'up' | 'down'): void {
@@ -465,6 +715,271 @@ export class GameScene extends Phaser.Scene {
       return;
     }
     this.goDownStairs();
+  }
+
+  private tryUseAltar(): void {
+    if (this.currentFloor <= 0) {
+      this.messageLog.addMessage('No altar rituals are needed in town.', MessageType.SYSTEM);
+      this.render();
+      return;
+    }
+
+    const tile = this.gameMap.getTile(this.player.x, this.player.y);
+    if (!tile || tile.type !== TileType.ALTAR) {
+      this.messageLog.addMessage('You must stand on an altar to perform a ritual.', MessageType.SYSTEM);
+      this.render();
+      return;
+    }
+
+    if (this.altarUsedFloors.has(this.currentFloor)) {
+      this.messageLog.addMessage('The altar is dormant on this floor.', MessageType.SYSTEM);
+      this.render();
+      return;
+    }
+
+    const offer =
+      this.altarOffersByFloor.get(this.currentFloor) ??
+      {
+        boon: ALTAR_BOONS[Math.floor(Math.random() * ALTAR_BOONS.length)],
+        curse: ALTAR_CURSES[Math.floor(Math.random() * ALTAR_CURSES.length)],
+      };
+    this.altarOffersByFloor.set(this.currentFloor, offer);
+    this.pendingAltarOffer = offer;
+    this.altarSelectionIndex = 0;
+    this.drawAltarSelectionOverlay();
+  }
+
+  private isAltarSelectionActive(): boolean {
+    return this.pendingAltarOffer !== undefined;
+  }
+
+  private handleAltarSelectionKey(key: string): void {
+    if (!this.pendingAltarOffer) {
+      return;
+    }
+
+    switch (key.toLowerCase()) {
+      case 'arrowup':
+      case 'w':
+      case 'arrowdown':
+      case 's':
+        this.altarSelectionIndex = this.altarSelectionIndex === 0 ? 1 : 0;
+        this.drawAltarSelectionOverlay();
+        break;
+      case 'enter':
+        if (this.altarSelectionIndex === 0) {
+          this.acceptAltarOffer();
+        } else {
+          this.declineAltarOffer();
+        }
+        break;
+      case 'escape':
+        this.closeAltarSelectionOverlay();
+        this.render();
+        break;
+      default:
+        break;
+    }
+  }
+
+  private drawAltarSelectionOverlay(): void {
+    if (!this.pendingAltarOffer) {
+      return;
+    }
+    if (this.altarOverlay) {
+      this.altarOverlay.destroy();
+    }
+
+    const { boon, curse } = this.pendingAltarOffer;
+    const acceptMarker = this.altarSelectionIndex === 0 ? '>' : ' ';
+    const declineMarker = this.altarSelectionIndex === 1 ? '>' : ' ';
+    const lines = [
+      'Ancient Altar',
+      '',
+      `Boon:  ${boon.name} (${boon.description})`,
+      `Curse: ${curse.name} (${curse.description})`,
+      '',
+      `${acceptMarker} Accept the pact`,
+      `${declineMarker} Leave the altar`,
+      '',
+      'Up/Down: select  Enter: confirm  Esc: close',
+    ];
+
+    this.altarOverlay = this.add.text(16, 40, lines.join('\n'), {
+      fontFamily: 'monospace',
+      fontSize: '14px',
+      color: '#ffffff',
+      backgroundColor: '#000000',
+      padding: { x: 8, y: 8 },
+    });
+    this.altarOverlay.setDepth(1001);
+  }
+
+  private closeAltarSelectionOverlay(): void {
+    this.pendingAltarOffer = undefined;
+    this.altarSelectionIndex = 0;
+    if (this.altarOverlay) {
+      this.altarOverlay.destroy();
+      this.altarOverlay = undefined;
+    }
+  }
+
+  private acceptAltarOffer(): void {
+    if (!this.pendingAltarOffer) {
+      return;
+    }
+
+    const { boon, curse } = this.pendingAltarOffer;
+    const boonApplied = this.applyPlayerStatDelta(boon.delta);
+    const curseApplied = this.applyPlayerStatDelta(curse.delta);
+    const appliedDelta = this.combineAltarDeltas(boonApplied, curseApplied);
+    this.activeAltarPact = { floor: this.currentFloor, boon, curse, appliedDelta };
+    this.altarUsedFloors.add(this.currentFloor);
+    this.altarOffersByFloor.delete(this.currentFloor);
+    this.messageLog.addMessage(`Altar boon: ${boon.name} (${boon.description}).`, MessageType.HEAL);
+    this.messageLog.addMessage(`Altar curse: ${curse.name} (${curse.description}).`, MessageType.WARNING);
+    this.closeAltarSelectionOverlay();
+    this.processTurn();
+  }
+
+  private declineAltarOffer(): void {
+    this.altarUsedFloors.add(this.currentFloor);
+    this.altarOffersByFloor.delete(this.currentFloor);
+    this.messageLog.addMessage('You reject the ritual. The altar falls silent.', MessageType.SYSTEM);
+    this.closeAltarSelectionOverlay();
+    this.processTurn();
+  }
+
+  private applyPlayerStatDelta(delta: AltarStatDelta): AltarStatDelta {
+    const beforeAttack = this.player.attack;
+    const beforeDefense = this.player.defense;
+    const beforeMagicPower = this.player.magicPower;
+    const beforeMaxHP = this.player.maxHP;
+    const beforeMaxMana = this.player.maxMana;
+
+    const nextAttack = Math.max(1, beforeAttack + (delta.attack ?? 0));
+    const nextDefense = Math.max(0, beforeDefense + (delta.defense ?? 0));
+    const nextMagicPower = Math.max(0, beforeMagicPower + (delta.magicPower ?? 0));
+    const nextMaxHP = Math.max(1, beforeMaxHP + (delta.maxHP ?? 0));
+    const nextMaxMana = Math.max(0, beforeMaxMana + (delta.maxMana ?? 0));
+
+    this.player.attack = nextAttack;
+    this.player.defense = nextDefense;
+    this.player.magicPower = nextMagicPower;
+    this.player.maxHP = nextMaxHP;
+    this.player.maxMana = nextMaxMana;
+
+    const appliedMaxHPDelta = nextMaxHP - beforeMaxHP;
+    const appliedMaxManaDelta = nextMaxMana - beforeMaxMana;
+
+    this.player.currentHP = Math.min(this.player.currentHP, this.player.maxHP);
+    if (appliedMaxHPDelta > 0) {
+      this.player.currentHP = Math.min(this.player.maxHP, this.player.currentHP + appliedMaxHPDelta);
+    }
+
+    this.player.currentMana = Math.min(this.player.currentMana, this.player.maxMana);
+    if (appliedMaxManaDelta > 0) {
+      this.player.currentMana = Math.min(this.player.maxMana, this.player.currentMana + appliedMaxManaDelta);
+    }
+
+    return {
+      attack: nextAttack - beforeAttack,
+      defense: nextDefense - beforeDefense,
+      magicPower: nextMagicPower - beforeMagicPower,
+      maxHP: appliedMaxHPDelta,
+      maxMana: appliedMaxManaDelta,
+    };
+  }
+
+  private combineAltarDeltas(...deltas: AltarStatDelta[]): AltarStatDelta {
+    return deltas.reduce<AltarStatDelta>(
+      (acc, delta) => ({
+        attack: (acc.attack ?? 0) + (delta.attack ?? 0),
+        defense: (acc.defense ?? 0) + (delta.defense ?? 0),
+        maxHP: (acc.maxHP ?? 0) + (delta.maxHP ?? 0),
+        maxMana: (acc.maxMana ?? 0) + (delta.maxMana ?? 0),
+        magicPower: (acc.magicPower ?? 0) + (delta.magicPower ?? 0),
+      }),
+      {}
+    );
+  }
+
+  private negateAltarDelta(delta: AltarStatDelta): AltarStatDelta {
+    return {
+      attack: -(delta.attack ?? 0),
+      defense: -(delta.defense ?? 0),
+      maxHP: -(delta.maxHP ?? 0),
+      maxMana: -(delta.maxMana ?? 0),
+      magicPower: -(delta.magicPower ?? 0),
+    };
+  }
+
+  private clearAltarPactOnFloorExit(): void {
+    if (!this.activeAltarPact) {
+      return;
+    }
+
+    const { floor, appliedDelta } = this.activeAltarPact;
+    this.applyPlayerStatDelta(this.negateAltarDelta(appliedDelta));
+    this.activeAltarPact = undefined;
+    this.messageLog.addMessage(`The altar pact from floor ${floor} fades away.`, MessageType.SYSTEM);
+  }
+
+  private tryDrinkFromFountain(): void {
+    const positions = [
+      { x: this.player.x, y: this.player.y },
+      { x: this.player.x + 1, y: this.player.y },
+      { x: this.player.x - 1, y: this.player.y },
+      { x: this.player.x, y: this.player.y + 1 },
+      { x: this.player.x, y: this.player.y - 1 },
+    ];
+
+    const fountainPos = positions.find((pos) => this.gameMap.getTile(pos.x, pos.y)?.type === TileType.FOUNTAIN);
+    if (!fountainPos) {
+      this.messageLog.addMessage('No fountain nearby to drink from.', MessageType.SYSTEM);
+      this.render();
+      return;
+    }
+
+    const roll = Math.random();
+    if (roll < 0.45) {
+      const healAmount = Math.max(6, Math.floor(this.player.maxHP * 0.35));
+      const restored = this.player.heal(healAmount);
+      if (restored > 0) {
+        this.messageLog.addMessage(`You drink from the fountain and recover ${restored} HP.`, MessageType.HEAL);
+      } else {
+        this.messageLog.addMessage('The fountain water is refreshing, but you are already at full health.', MessageType.INFO);
+      }
+    } else if (roll < 0.8) {
+      const manaAmount = Math.max(4, Math.floor(this.player.maxMana * 0.4));
+      const restored = this.player.restoreMana(manaAmount);
+      if (restored > 0) {
+        this.messageLog.addMessage(`Arcane water restores ${restored} mana.`, MessageType.INFO);
+      } else {
+        this.messageLog.addMessage('The fountain hums with mana, but your reserves are full.', MessageType.INFO);
+      }
+    } else if (Math.random() < 0.5) {
+      const hpRestored = this.player.heal(Math.max(3, Math.floor(this.player.maxHP * 0.15)));
+      const manaRestored = this.player.restoreMana(Math.max(2, Math.floor(this.player.maxMana * 0.2)));
+      this.messageLog.addMessage(
+        `A blessed surge revitalizes you (+${hpRestored} HP, +${manaRestored} mana).`,
+        MessageType.HEAL
+      );
+    } else if (this.player.currentHP <= 1) {
+      const manaLoss = Math.min(this.player.currentMana, 3 + Math.floor(Math.random() * 4));
+      this.player.currentMana -= manaLoss;
+      this.messageLog.addMessage(
+        `Bitter water drains your spirit (-${manaLoss} mana).`,
+        MessageType.WARNING
+      );
+    } else {
+      const maxSafeDamage = this.player.currentHP - 1;
+      const damage = Math.min(maxSafeDamage, 4 + Math.floor(Math.random() * 7));
+      this.player.takeDamage(damage);
+      this.messageLog.addMessage(`The water is tainted! You suffer ${damage} damage.`, MessageType.DAMAGE);
+    }
+
+    this.processTurn();
   }
 
   private tryBreakStickFromNearbyTree(): void {
@@ -505,6 +1020,90 @@ export class GameScene extends Phaser.Scene {
     this.messageLog.addMessage('You break off a sturdy stick. It can be equipped as a weapon.', MessageType.SYSTEM);
     this.render();
   }
+
+  private consumeInventoryItem(itemId: string): boolean {
+    const item = this.player.getItem(itemId);
+    if (!item) {
+      return false;
+    }
+    if (item.quantity > 1) {
+      item.quantity--;
+    } else {
+      this.player.removeItem(itemId);
+    }
+    return true;
+  }
+
+  private tryOpenChest(x: number, y: number): void {
+    const tile = this.gameMap.getTile(x, y);
+    if (!tile || tile.type !== TileType.CHEST_CLOSED) {
+      this.render();
+      return;
+    }
+
+    const keyItemId = this.player.getItem('rusty_key') ? 'rusty_key' : null;
+    const lockpickItemId = this.player.getItem('lockpick_set')
+      ? 'lockpick_set'
+      : this.player.getItem('lockpick')
+      ? 'lockpick'
+      : null;
+
+    let unlocked = false;
+    if (keyItemId) {
+      this.consumeInventoryItem(keyItemId);
+      unlocked = true;
+      this.messageLog.addMessage('You unlock the chest with a key.', MessageType.SYSTEM);
+    } else if (lockpickItemId) {
+      this.consumeInventoryItem(lockpickItemId);
+      const toolId = lockpickItemId === 'lockpick_set' ? 'lockpick_set' : 'lockpick';
+      const successChance = this.player.getLockpickSuccessChance(toolId);
+      unlocked = Math.random() <= successChance;
+      const training = this.player.trainLockpicking(unlocked);
+
+      if (unlocked) {
+        this.messageLog.addMessage(
+          `You pick the chest lock (${Math.round(successChance * 100)}%).`,
+          MessageType.SYSTEM
+        );
+      } else {
+        this.messageLog.addMessage('Lockpicking failed. The chest remains locked.', MessageType.SYSTEM);
+      }
+
+      if (training.increased) {
+        this.messageLog.addMessage(`Lockpicking improves to ${training.value}.`, MessageType.SYSTEM);
+      }
+    } else {
+      this.messageLog.addMessage('The chest is locked. You need a key or lockpick.', MessageType.SYSTEM);
+      this.render();
+      return;
+    }
+
+    if (!unlocked) {
+      this.processTurn();
+      return;
+    }
+
+    tile.type = TileType.CHEST_OPEN;
+    tile.blocked = false;
+    tile.blocksSight = false;
+
+    const loot = this.itemSpawnSystem.generateChestLoot(this.currentFloor, x, y);
+    for (const item of loot) {
+      this.gameMap.addItem(item, x, y);
+    }
+
+    if (loot.length > 0) {
+      const preview = loot
+        .slice(0, 3)
+        .map((item) => item.name)
+        .join(', ');
+      this.messageLog.addMessage(`Chest opened! Loot: ${preview}`, MessageType.ITEM_DROP);
+    } else {
+      this.messageLog.addMessage('The chest was empty.', MessageType.SYSTEM);
+    }
+
+    this.processTurn();
+  }
   
   private processTurn(): void {
     // Clean up dead monsters
@@ -537,9 +1136,113 @@ export class GameScene extends Phaser.Scene {
         return;
       }
     }
+
+    this.updateQuestProgress();
     
     // Render after all monsters have acted
     this.render();
+  }
+
+  private handleDialogueAction(payload: {
+    action: string;
+    npcId: string | null;
+    npcName: string | null;
+    questIds: string[];
+    shopInventoryIds: string[];
+  }): void {
+    if (payload.action.startsWith('open_shop')) {
+      this.scene.launch('ShopScene', {
+        player: this.player,
+        npcName: payload.npcName ?? 'Merchant',
+        inventoryIds: payload.shopInventoryIds,
+        shopAction: payload.action,
+      });
+      this.scene.pause('GameScene');
+      return;
+    }
+
+    if (payload.action === 'heal_player') {
+      this.applyHealerService();
+      return;
+    }
+
+    if (payload.action !== 'accept_quest') {
+      return;
+    }
+
+    const questId = payload.questIds[0] ?? (payload.npcId === 'aldric' ? 'clear_dungeon_level_1' : null);
+    if (!questId) {
+      return;
+    }
+
+    const quest = QUEST_DEFINITIONS[questId];
+    if (!quest) {
+      this.messageLog.addMessage(`Unknown quest: ${questId}`, MessageType.SYSTEM);
+      this.render();
+      return;
+    }
+
+    const accepted = this.player.acceptQuest({
+      id: quest.id,
+      title: quest.title,
+      objective: quest.objective,
+    });
+    if (accepted) {
+      this.messageLog.addMessage(`Quest accepted: ${quest.title}`, MessageType.SYSTEM);
+    } else {
+      this.messageLog.addMessage(`Quest already active: ${quest.title}`, MessageType.SYSTEM);
+    }
+    this.render();
+  }
+
+  private applyHealerService(): void {
+    if (HEAL_PLAYER_COST > 0 && !this.player.spendGold(HEAL_PLAYER_COST)) {
+      this.messageLog.addMessage(
+        `You need ${HEAL_PLAYER_COST} gold for healing.`,
+        MessageType.SYSTEM
+      );
+      this.render();
+      return;
+    }
+
+    const hpRestored = this.player.maxHP - this.player.currentHP;
+    const manaRestored = this.player.maxMana - this.player.currentMana;
+    this.player.currentHP = this.player.maxHP;
+    this.player.currentMana = this.player.maxMana;
+
+    if (hpRestored === 0 && manaRestored === 0) {
+      this.messageLog.addMessage('You are already at full health and mana.', MessageType.SYSTEM);
+    } else {
+      let msg = `Healed for ${hpRestored} HP`;
+      if (manaRestored > 0) {
+        msg += ` and ${manaRestored} MP`;
+      }
+      if (HEAL_PLAYER_COST > 0) {
+        msg += ` for ${HEAL_PLAYER_COST} gold`;
+      }
+      this.messageLog.addMessage(`${msg}.`, MessageType.HEAL);
+    }
+
+    this.render();
+  }
+
+  private updateQuestProgress(): void {
+    const questId = 'clear_dungeon_level_1';
+    if (!this.player.hasAcceptedQuest(questId) || this.player.isQuestCompleted(questId)) {
+      return;
+    }
+    if (this.currentFloor !== 1) {
+      return;
+    }
+
+    const livingMonsters = this.monsters.filter((monster) => !monster.isDead());
+    if (livingMonsters.length > 0) {
+      return;
+    }
+
+    if (this.player.completeQuest(questId)) {
+      this.messageLog.addMessage('Quest complete: Elder Aldric\'s Plea', MessageType.SYSTEM);
+    }
   }
 
   private executeMonsterAction(monster: Monster, action: { type: ActionType; targetX?: number; targetY?: number }): void {
@@ -850,6 +1553,9 @@ export class GameScene extends Phaser.Scene {
       this.mapConfigNPCTypeToEntityNPCType(npcDef.type),
       'start'
     );
+    npc.definitionId = npcDef.id;
+    npc.questIds = npcDef.questsOffered ? [...npcDef.questsOffered] : [];
+    npc.shopInventoryIds = npcDef.inventory ? [...npcDef.inventory] : [];
 
     const dialogueNodes = npcDef.dialogue.map((dialogue) => ({
       id: dialogue.id,
@@ -857,6 +1563,7 @@ export class GameScene extends Phaser.Scene {
       options: dialogue.options.map((option) => ({
         id: option.text.substring(0, 20),
         text: option.text,
+        actionId: option.action || undefined,
         nextDialogueId: option.nextDialogueId,
         action: option.action ? () => console.log('Action:', option.action) : undefined,
       })),
@@ -1068,6 +1775,8 @@ export class GameScene extends Phaser.Scene {
   }
 
   private goDownStairs(): void {
+    this.clearAltarPactOnFloorExit();
+    this.closeAltarSelectionOverlay();
     this.cacheCurrentDungeonFloorState();
     const targetFloor = this.currentFloor + 1;
     console.log('=== DESCENDING TO FLOOR', targetFloor, '===');
@@ -1077,6 +1786,8 @@ export class GameScene extends Phaser.Scene {
   }
 
   private goUpStairs(): void {
+    this.clearAltarPactOnFloorExit();
+    this.closeAltarSelectionOverlay();
     if (this.currentFloor === 1) {
       this.cacheCurrentDungeonFloorState();
       this.currentFloor = 0;
@@ -1190,6 +1901,18 @@ export class GameScene extends Phaser.Scene {
             glyph = '*';
             color = tile.visible ? 0x888888 : 0x444444;
             break;
+          case TileType.CHEST_CLOSED:
+            glyph = 'C';
+            color = tile.visible ? 0xcc8800 : 0x664400;
+            break;
+          case TileType.CHEST_OPEN:
+            glyph = 'c';
+            color = tile.visible ? 0xaa7733 : 0x553311;
+            break;
+          case TileType.ALTAR:
+            glyph = 'A';
+            color = tile.visible ? 0xff44ff : 0x772277;
+            break;
         }
 
         this.asciiRenderer.drawTile(x, y, glyph, color);
@@ -1211,6 +1934,22 @@ export class GameScene extends Phaser.Scene {
     }
     if (itemsRendered > 0) {
       console.log(`Rendered ${itemsRendered} items`);
+    }
+
+    let trapsRendered = 0;
+    const traps = this.getTrapsArraySafe();
+    for (const trap of traps) {
+      if (trap.disarmed || !trap.revealed) {
+        continue;
+      }
+      const tile = this.gameMap.getTile(trap.x, trap.y);
+      if (tile && tile.visible) {
+        this.asciiRenderer.drawTile(trap.x, trap.y, '^', 0xff4444);
+        trapsRendered++;
+      }
+    }
+    if (trapsRendered > 0) {
+      console.log(`Rendered ${trapsRendered} traps`);
     }
 
     // Render NPCs (on top of items)
@@ -1241,6 +1980,11 @@ export class GameScene extends Phaser.Scene {
     const status = `${this.player.playerClass.toUpperCase()} Lv${this.player.level} | HP: ${this.player.currentHP}/${this.player.maxHP} | XP: ${this.player.xp} | Gold: ${this.player.getGoldString()} | Floor: ${this.currentFloor === 0 ? 'Town' : this.currentFloor}`;
     this.asciiRenderer.drawText(1, 0, status, 0xffff00);
 
+    const objective = this.player.getPrimaryObjectiveText();
+    if (objective) {
+      this.asciiRenderer.drawText(1, 2, `Quest: ${objective}`.substring(0, 78), 0x66ccff);
+    }
+
     // Render messages (bottom 3 lines)
     const msgs = this.messageLog.getMessages(3);
     for (let i = 0; i < msgs.length; i++) {
@@ -1251,7 +1995,7 @@ export class GameScene extends Phaser.Scene {
     this.asciiRenderer.drawText(
       1,
       1,
-      'Move: Arrows/WASD | G pickup | I inv | T talk | B stick | </> stairs',
+      'Move: Arrows/WASD | G pickup | I inv | T talk | F drink | X disarm | R altar | </> stairs',
       0xaaaaaa
     );
 

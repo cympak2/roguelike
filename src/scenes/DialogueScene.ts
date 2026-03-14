@@ -1,7 +1,15 @@
 import Phaser from 'phaser';
 import { ASCIIRenderer } from '../ui/ascii-renderer';
-import { NPC, DialogueNode, DialogueOption } from '../entities/npc';
+import { NPC, DialogueNode } from '../entities/npc';
 import { ModalBackground } from '../ui/modal-background';
+
+interface DialogueActionPayload {
+  action: string;
+  npcId: string | null;
+  npcName: string | null;
+  questIds: string[];
+  shopInventoryIds: string[];
+}
 
 /**
  * DialogueScene - Overlay scene for NPC conversations
@@ -215,10 +223,15 @@ export class DialogueScene extends Phaser.Scene {
     if (index < 0 || index >= options.length) return;
 
     const selectedOption = options[index];
+    const actionId = selectedOption.actionId;
 
     // Execute option action string if defined (for npc-data.ts format)
-    if (typeof (selectedOption as any).action === 'string' && (selectedOption as any).action) {
-      this.executeAction((selectedOption as any).action, selectedOption);
+    if (actionId) {
+      this.executeAction(actionId);
+      if (actionId.startsWith('open_shop')) {
+        this.hideDialogue();
+        return;
+      }
     }
 
     // Execute option action callback if defined (for entity format)
@@ -228,9 +241,6 @@ export class DialogueScene extends Phaser.Scene {
 
     // Progress to next dialogue or end
     if (selectedOption.nextDialogueId) {
-      // Use the option id if it exists, otherwise use the text as a fallback identifier
-      const optionId = (selectedOption as any).id || selectedOption.text;
-      
       // Manually navigate to next dialogue since we may not have proper IDs
       if (this.currentNPC.dialogues.has(selectedOption.nextDialogueId)) {
         this.currentNPC.currentDialogueId = selectedOption.nextDialogueId;
@@ -263,15 +273,23 @@ export class DialogueScene extends Phaser.Scene {
    * @param action - Action string to execute
    * @param option - The dialogue option
    */
-  private executeAction(action: string, option: DialogueOption): void {
+  private executeAction(action: string): void {
     if (!action) return;
+
+    const gameScene = this.scene.get('GameScene');
+    const payload: DialogueActionPayload = {
+      action,
+      npcId: this.currentNPC?.definitionId ?? null,
+      npcName: this.currentNPC?.name ?? null,
+      questIds: this.currentNPC?.questIds ?? [],
+      shopInventoryIds: this.currentNPC?.shopInventoryIds ?? [],
+    };
+    gameScene.events.emit('dialogue-action', payload);
 
     // Handle different action types
     switch (action) {
       case 'accept_quest':
         console.log('Quest accepted!');
-        // TODO: Add quest to player's quest log
-        // Could emit event: this.events.emit('quest-accepted', questId);
         break;
 
       case 'open_shop':
@@ -282,8 +300,6 @@ export class DialogueScene extends Phaser.Scene {
 
       case 'heal_player':
         console.log('Player healed!');
-        // TODO: Restore player health
-        // Could emit event: this.events.emit('heal-player');
         break;
 
       case 'give_item':

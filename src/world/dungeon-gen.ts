@@ -480,10 +480,46 @@ export class DungeonGenerator {
     for (let y = 1; y < map.height - 1; y++) {
       for (let x = 1; x < map.width - 1; x++) {
         const tile = map.getTile(x, y);
-        if (tile && tile.type === TileType.FLOOR && this.random.chance(trapDensity)) {
-          // Trap placement logic would go here
-          // Currently handled by entity spawning system
+        if (!tile || tile.type !== TileType.FLOOR || !this.random.chance(trapDensity)) {
+          continue;
         }
+
+        // Avoid placing traps adjacent to high-traffic special tiles.
+        const nearbySpecialTile = [
+          { x, y },
+          { x: x + 1, y },
+          { x: x - 1, y },
+          { x, y: y + 1 },
+          { x, y: y - 1 },
+        ].some((pos) => {
+          const nearby = map.getTile(pos.x, pos.y);
+          if (!nearby) return false;
+          return (
+            nearby.type === TileType.STAIRS_UP ||
+            nearby.type === TileType.STAIRS_DOWN ||
+            nearby.type === TileType.DOOR_OPEN ||
+            nearby.type === TileType.DOOR_CLOSED ||
+            nearby.type === TileType.ALTAR
+          );
+        });
+        if (nearbySpecialTile) {
+          continue;
+        }
+
+        if (map.getTrapAt(x, y)) {
+          continue;
+        }
+
+        const damage = this.random.randomInt(6 + floorNumber, 10 + floorNumber * 2);
+        map.addTrap({
+          id: `trap_spike_${floorNumber}_${x}_${y}`,
+          type: 'spike',
+          x,
+          y,
+          damage,
+          revealed: false,
+          disarmed: false,
+        });
       }
     }
   }
@@ -509,6 +545,13 @@ export class DungeonGenerator {
 
     if (map.isInBounds(x, y)) {
       map.setTile(x, y, TileType.DOOR_CLOSED, true, true);
+    }
+
+    // Place a locked chest inside the treasure room.
+    const chestX = treasureRoom.center.x;
+    const chestY = treasureRoom.center.y;
+    if (map.isInBounds(chestX, chestY)) {
+      map.setTile(chestX, chestY, TileType.CHEST_CLOSED, true, false);
     }
   }
 

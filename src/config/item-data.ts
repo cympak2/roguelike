@@ -465,7 +465,7 @@ const SCROLL_ENCHANT_ARMOR: Scroll = {
   uses: 1,
 };
 
-// MISCELLANEOUS (2)
+// MISCELLANEOUS
 const GOLD: Item = {
   id: 'misc_gold',
   name: 'Gold Coin',
@@ -490,6 +490,84 @@ const RATION: Item = {
   weight: 0.3,
   stackable: true,
   description: 'A meal to sustain you on your journey.',
+};
+
+const LOCKPICK: Item = {
+  id: 'lockpick',
+  name: 'Lockpick',
+  glyph: ';',
+  color: '#C0C0C0',
+  type: ItemType.MISCELLANEOUS,
+  rarity: ItemRarity.COMMON,
+  value: 25,
+  weight: 0.1,
+  stackable: true,
+  description: 'A thin metal pick used to open simple locks.',
+};
+
+const LOCKPICK_SET: Item = {
+  id: 'lockpick_set',
+  name: 'Lockpick Set',
+  glyph: ';',
+  color: '#D8D8D8',
+  type: ItemType.MISCELLANEOUS,
+  rarity: ItemRarity.UNCOMMON,
+  value: 80,
+  weight: 0.2,
+  stackable: true,
+  description: 'A professional set of lockpicks with higher quality tools.',
+};
+
+const RUSTY_KEY: Item = {
+  id: 'rusty_key',
+  name: 'Rusty Key',
+  glyph: '?',
+  color: '#B8860B',
+  type: ItemType.MISCELLANEOUS,
+  rarity: ItemRarity.UNCOMMON,
+  value: 35,
+  weight: 0.1,
+  stackable: true,
+  description: 'A worn key that can open old dungeon chests.',
+};
+
+const ROPE: Item = {
+  id: 'rope',
+  name: 'Rope',
+  glyph: '~',
+  color: '#C2A878',
+  type: ItemType.MISCELLANEOUS,
+  rarity: ItemRarity.COMMON,
+  value: 15,
+  weight: 1.0,
+  stackable: true,
+  description: 'Useful rope for climbing and traversing hazards.',
+};
+
+const TORCH: Item = {
+  id: 'torch',
+  name: 'Torch',
+  glyph: 'i',
+  color: '#FFAA33',
+  type: ItemType.MISCELLANEOUS,
+  rarity: ItemRarity.COMMON,
+  value: 12,
+  weight: 0.6,
+  stackable: true,
+  description: 'A basic light source for dark places.',
+};
+
+const SMOKE_BOMB: Item = {
+  id: 'smoke_bomb',
+  name: 'Smoke Bomb',
+  glyph: '*',
+  color: '#888888',
+  type: ItemType.MISCELLANEOUS,
+  rarity: ItemRarity.UNCOMMON,
+  value: 45,
+  weight: 0.3,
+  stackable: true,
+  description: 'Creates a cloud of smoke for quick escapes.',
 };
 
 // ============================================================================
@@ -531,6 +609,12 @@ export const ITEMS: ItemDefinition[] = [
   // Miscellaneous
   GOLD,
   RATION,
+  LOCKPICK,
+  LOCKPICK_SET,
+  RUSTY_KEY,
+  ROPE,
+  TORCH,
+  SMOKE_BOMB,
 ];
 
 export const ITEM_DATA = {

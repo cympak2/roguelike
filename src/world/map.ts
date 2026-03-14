@@ -93,6 +93,18 @@ export interface Item {
   goldAmount?: number;
 }
 
+export type TrapType = 'spike';
+
+export interface Trap {
+  id: string;
+  type: TrapType;
+  x: number;
+  y: number;
+  damage: number;
+  revealed: boolean;
+  disarmed: boolean;
+ }
+
 /**
  * Main game map class
  * Manages the dungeon layout, entities, items, and tile state
@@ -103,6 +115,7 @@ export class GameMap {
   tiles: Tile[][];
   entities: Entity[] = [];
   items: Item[] = [];
+  traps: Trap[] = [];
 
   constructor(width: number, height: number) {
     this.width = width;
@@ -240,6 +253,50 @@ export class GameMap {
    */
   getAllItems(): Item[] {
     return this.items;
+  }
+
+  addTrap(trap: Trap): void {
+    if (!this.isInBounds(trap.x, trap.y)) {
+      return;
+    }
+    const existing = this.getTrapAt(trap.x, trap.y);
+    if (existing) {
+      return;
+    }
+    this.traps.push(trap);
+  }
+
+  getTrapAt(x: number, y: number): Trap | null {
+    const trap = this.traps.find((entry) => entry.x === x && entry.y === y && !entry.disarmed);
+    return trap || null;
+  }
+
+  revealTrapAt(x: number, y: number): boolean {
+    const trap = this.getTrapAt(x, y);
+    if (!trap || trap.revealed) {
+      return false;
+    }
+    trap.revealed = true;
+    return true;
+  }
+
+  disarmTrapAt(x: number, y: number): boolean {
+    const trap = this.getTrapAt(x, y);
+    if (!trap) {
+      return false;
+    }
+    trap.disarmed = true;
+    trap.revealed = true;
+    return true;
+  }
+
+  getAdjacentTraps(x: number, y: number): Trap[] {
+    return this.traps.filter((trap) => {
+      if (trap.disarmed) return false;
+      const dx = Math.abs(trap.x - x);
+      const dy = Math.abs(trap.y - y);
+      return Math.max(dx, dy) <= 1;
+    });
   }
 
   /**

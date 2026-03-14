@@ -34,6 +34,13 @@ export interface Equipment {
   accessory?: InventoryItem;
 }
 
+export interface QuestObjective {
+  id: string;
+  title: string;
+  objective: string;
+  completed: boolean;
+}
+
 // ============================================================================
 // PLAYER CLASS
 // ============================================================================
@@ -72,6 +79,12 @@ export class Player extends Entity {
   gold: bigint;
   /** Currently equipped items */
   equipment: Equipment;
+  /** Quest state flags */
+  questFlags: Map<string, boolean>;
+  /** Active and completed quest metadata */
+  quests: QuestObjective[];
+  /** Lockpicking skill (0-100) */
+  lockpicking: number;
 
   // ============================================================================
   // CONSTRUCTOR
@@ -124,6 +137,21 @@ export class Player extends Entity {
       shield: undefined,
       accessory: undefined,
     };
+    this.questFlags = new Map<string, boolean>();
+    this.quests = [];
+    this.lockpicking = this.getStartingLockpickingSkill(playerClass);
+  }
+
+  private getStartingLockpickingSkill(playerClass: PlayerClass): number {
+    switch (playerClass) {
+      case 'rogue':
+        return 35;
+      case 'mage':
+        return 15;
+      case 'warrior':
+      default:
+        return 10;
+    }
   }
 
   // ============================================================================
@@ -259,6 +287,70 @@ export class Player extends Entity {
     return this.gold.toString();
   }
 
+  getLockpickSuccessChance(toolId: 'lockpick' | 'lockpick_set' = 'lockpick'): number {
+    const classBonus = this.playerClass === 'rogue' ? 0.08 : 0;
+    const skillBonus = this.lockpicking * 0.005;
+    const toolBonus = toolId === 'lockpick_set' ? 0.12 : 0.05;
+    const chance = 0.3 + classBonus + skillBonus + toolBonus;
+    return Math.max(0.1, Math.min(0.95, chance));
+  }
+
+  trainLockpicking(success: boolean): { increased: boolean; value: number } {
+    const previous = this.lockpicking;
+    const gain = success ? 2 : 1;
+    this.lockpicking = Math.min(100, this.lockpicking + gain);
+    return {
+      increased: this.lockpicking > previous,
+      value: this.lockpicking,
+    };
+  }
+
+  acceptQuest(quest: Omit<QuestObjective, 'completed'>): boolean {
+    const existing = this.quests.find((entry) => entry.id === quest.id);
+    if (existing) {
+      return false;
+    }
+
+    this.quests.push({
+      ...quest,
+      completed: false,
+    });
+    this.questFlags.set(`${quest.id}_accepted`, true);
+    this.questFlags.set(`${quest.id}_completed`, false);
+    return true;
+  }
+
+  hasAcceptedQuest(questId: string): boolean {
+    return this.questFlags.get(`${questId}_accepted`) === true;
+  }
+
+  isQuestCompleted(questId: string): boolean {
+    return this.questFlags.get(`${questId}_completed`) === true;
+  }
+
+  completeQuest(questId: string): boolean {
+    const quest = this.quests.find((entry) => entry.id === questId);
+    if (!quest || quest.completed) {
+      return false;
+    }
+
+    quest.completed = true;
+    this.questFlags.set(`${questId}_completed`, true);
+    return true;
+  }
+
+  getActiveQuests(): QuestObjective[] {
+    return this.quests.filter((quest) => !quest.completed);
+  }
+
+  getPrimaryObjectiveText(): string | null {
+    const activeQuest = this.getActiveQuests()[0];
+    if (!activeQuest) {
+      return null;
+    }
+    return `${activeQuest.title}: ${activeQuest.objective}`;
+  }
+
   // ============================================================================
   // EQUIPMENT METHODS
   // ============================================================================
@@ -334,7 +426,7 @@ export class Player extends Entity {
   getStatus(): string {
     return (
       `[${this.playerClass.toUpperCase()}] ${this.name} Lvl.${this.level} ` +
-      `HP: ${this.currentHP}/${this.maxHP} | XP: ${this.xp}/${this.xpForNextLevel}`
+      `HP: ${this.currentHP}/${this.maxHP} | XP: ${this.xp}/${this.xpForNextLevel} | Lockpick: ${this.lockpicking}`
     );
   }
 }

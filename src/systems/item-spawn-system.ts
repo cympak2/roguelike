@@ -62,7 +62,7 @@ export class ItemSpawnSystem {
     }
 
     // Scatter gold throughout the dungeon
-    this.scatterGold(map, floorNumber, config);
+    this.scatterGold(map, config);
 
     // Place special items in treasure rooms (if any)
     this.placeSpecialItems(map, rooms, floorNumber);
@@ -104,6 +104,27 @@ export class ItemSpawnSystem {
       }
     }
 
+    return loot;
+  }
+
+  /**
+   * Generate weighted loot for a treasure chest on a floor.
+   */
+  generateChestLoot(floorNumber: number, x: number, y: number): Item[] {
+    const loot: Item[] = [];
+    const itemCount = this.random.randomInt(1, 4); // 1-3 items
+
+    for (let i = 0; i < itemCount; i++) {
+      const itemDef = this.getItemForFloor(Math.max(floorNumber + 1, floorNumber));
+      if (!itemDef) {
+        continue;
+      }
+      const item = this.createItemInstance(itemDef, x, y);
+      loot.push(item);
+    }
+
+    const bonusGold = this.createGoldInstance(this.random.randomInt(8 + floorNumber * 2, 20 + floorNumber * 4), x, y);
+    loot.push(bonusGold);
     return loot;
   }
 
@@ -218,7 +239,7 @@ export class ItemSpawnSystem {
   /**
    * Scatter gold piles throughout the dungeon
    */
-  private scatterGold(map: GameMap, floorNumber: number, config: FloorSpawnConfig): void {
+  private scatterGold(map: GameMap, config: FloorSpawnConfig): void {
     const rooms = this.findRooms(map);
     
     for (let i = 0; i < config.goldPilesPerFloor; i++) {
