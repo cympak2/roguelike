@@ -6,6 +6,7 @@ import { NPC, NPCType as EntityNPCType } from '../entities/npc';
 import { Monster, AIBehavior } from '../entities/monster';
 import {
   getNPCDefinitionsForContext,
+  NPCS,
   NPCType as ConfigNPCType,
   type NPCDefinition,
 } from '../config/npc-data';
@@ -20,15 +21,17 @@ import { ItemSpawnSystem } from '../systems/item-spawn-system';
 import { MonsterAISystem, ActionType } from '../systems/monster-ai-system';
 import { NoiseSystem } from '../systems/noise-system';
 import { ITEMS, ItemType, type ItemDefinition } from '../config/item-data';
+import {
+  QUEST_DEFINITIONS,
+  getQuestIdsForNpc,
+  isQuestUnlocked,
+  type QuestCompletionRule,
+  type QuestDefinition,
+  type QuestReward,
+} from '../config/quest-data';
 import { getMonsterTemplate, type MonsterPhaseDefinition } from '../config/monster-data';
 import { ensureDurability, getMissingDurability } from '../utils/durability';
 import type { PlayerStatusEffectType, PlayerStatusTickEvent } from '../types/status-effects';
-
-interface QuestDefinition {
-  id: string;
-  title: string;
-  objective: string;
-}
 
 type DungeonGenerationMode = 'persistent' | 'regenerating';
 
@@ -156,13 +159,6 @@ const ALTAR_CURSES: AltarEffect[] = [
   },
 ];
 
-const QUEST_DEFINITIONS: Record<string, QuestDefinition> = {
-  clear_dungeon_level_1: {
-    id: 'clear_dungeon_level_1',
-    title: 'Elder Aldric\'s Plea',
-    objective: 'Clear all monsters on dungeon level 1.',
-  },
-};
 const HEAL_PLAYER_COST = 0;
 const REPAIR_COST_PER_DURABILITY = 1;
 const NOISE_BUDGET = {
@@ -1652,12 +1648,24 @@ export class GameScene extends Phaser.Scene {
       return;
     }
 
-    if (payload.action !== 'accept_quest') {
+    if (payload.action === 'claim_quest_reward') {
+      this.claimQuestReward(payload.npcId);
       return;
     }
 
-    const questId = payload.questIds[0] ?? (payload.npcId === 'aldric' ? 'clear_dungeon_level_1' : null);
+    if (payload.action.startsWith('accept_quest')) {
+      this.acceptQuestFromDialogue(payload.action, payload.questIds);
+      return;
+    }
+
+    this.render();
+  }
+
+  private acceptQuestFromDialogue(action: string, availableQuestIds: string[]): void {
+    const questId = this.resolveQuestIdForAction(action, availableQuestIds);
     if (!questId) {
+      this.messageLog.addMessage('No available quest matches this dialogue option.', MessageType.SYSTEM);
+      this.render();
       return;
     }
 
@@ -1673,12 +1681,128 @@ export class GameScene extends Phaser.Scene {
       title: quest.title,
       objective: quest.objective,
     });
-    if (accepted) {
-      this.messageLog.addMessage(`Quest accepted: ${quest.title}`, MessageType.SYSTEM);
-    } else {
+
+    if (!accepted) {
       this.messageLog.addMessage(`Quest already active: ${quest.title}`, MessageType.SYSTEM);
+      this.render();
+      return;
     }
+
+    this.messageLog.addMessage(`Quest accepted: ${quest.title}`, MessageType.SYSTEM);
     this.render();
+  }
+
+  private resolveQuestIdForAction(action: string, availableQuestIds: string[]): string | null {
+    for (const questId of availableQuestIds) {
+      const quest = QUEST_DEFINITIONS[questId];
+      if (!quest || !quest.acceptActions.includes(action)) {
+        continue;
+      }
+      return questId;
+    }
+    return null;
+  }
+
+  private claimQuestReward(npcId: string | null): void {
+    if (!npcId) {
+      return;
+    }
+
+    const claimableQuest = this.getClaimableQuestForNpc(npcId);
+    if (!claimableQuest) {
+      this.messageLog.addMessage('You have no completed quests to turn in here.', MessageType.SYSTEM);
+      this.render();
+      return;
+    }
+
+    if (!this.canGrantQuestRewards(claimableQuest.rewards)) {
+      this.messageLog.addMessage('Your inventory is too full to claim this reward.', MessageType.SYSTEM);
+      this.render();
+      return;
+    }
+
+    if (!this.consumeQuestTurnInRequirements(claimableQuest)) {
+      this.messageLog.addMessage('You do not have the required turn-in items.', MessageType.SYSTEM);
+      this.render();
+      return;
+    }
+
+    this.grantQuestRewards(claimableQuest.rewards);
+    if (!this.player.claimQuestReward(claimableQuest.id)) {
+      this.messageLog.addMessage('This quest reward has already been claimed.', MessageType.SYSTEM);
+      this.render();
+      return;
+    }
+
+    this.messageLog.addMessage(`Quest reward claimed: ${claimableQuest.title}`, MessageType.HEAL);
+    this.render();
+  }
+
+  private getClaimableQuestForNpc(npcId: string): QuestDefinition | null {
+    const questIds = getQuestIdsForNpc(npcId);
+    for (const questId of questIds) {
+      if (!this.player.isQuestCompleted(questId) || this.player.isQuestRewardClaimed(questId)) {
+        continue;
+      }
+      const quest = QUEST_DEFINITIONS[questId];
+      if (!quest || quest.turnInNpcId !== npcId) {
+        continue;
+      }
+      return quest;
+    }
+    return null;
+  }
+
+  private consumeQuestTurnInRequirements(quest: QuestDefinition): boolean {
+    if (!quest.turnInRequirements || quest.turnInRequirements.length === 0) {
+      return true;
+    }
+
+    for (const requirement of quest.turnInRequirements) {
+      if (this.getInventoryQuantity(requirement.itemId) < requirement.quantity) {
+        return false;
+      }
+    }
+
+    for (const requirement of quest.turnInRequirements) {
+      if (!this.consumeInventoryItemById(requirement.itemId, requirement.quantity)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  private canGrantQuestRewards(rewards: QuestReward[]): boolean {
+    return rewards.every((reward) => {
+      if (!reward.itemId) {
+        return true;
+      }
+      const itemDef = ITEMS.find((item) => item.id === reward.itemId);
+      if (!itemDef) {
+        return false;
+      }
+      const inventoryItem = this.createInventoryItemFromDefinition(itemDef, reward.itemQuantity ?? 1);
+      return this.player.canAddItem(inventoryItem);
+    });
+  }
+
+  private grantQuestRewards(rewards: QuestReward[]): void {
+    for (const reward of rewards) {
+      if (reward.gold && reward.gold > 0) {
+        this.player.addGold(reward.gold);
+      }
+      if (reward.xp && reward.xp > 0) {
+        this.awardPlayerXP(reward.xp);
+      }
+      if (reward.itemId) {
+        const itemDef = ITEMS.find((item) => item.id === reward.itemId);
+        if (!itemDef) {
+          continue;
+        }
+        const item = this.createInventoryItemFromDefinition(itemDef, reward.itemQuantity ?? 1);
+        this.player.addItem(item);
+      }
+    }
   }
 
   private applyHealerService(): void {
@@ -1945,22 +2069,64 @@ export class GameScene extends Phaser.Scene {
   }
 
   private updateQuestProgress(): void {
-    const questId = 'clear_dungeon_level_1';
-    if (!this.player.hasAcceptedQuest(questId) || this.player.isQuestCompleted(questId)) {
-      return;
+    for (const quest of this.player.quests) {
+      if (quest.completed) {
+        continue;
+      }
+      const definition = QUEST_DEFINITIONS[quest.id];
+      if (!definition) {
+        continue;
+      }
+
+      if (!this.isQuestCompletionSatisfied(definition.completion)) {
+        continue;
+      }
+
+      if (this.player.completeQuest(quest.id)) {
+        this.messageLog.addMessage(
+          `Quest complete: ${definition.title}. Return to ${this.getQuestTurnInName(definition.turnInNpcId)} for your reward.`,
+          MessageType.SYSTEM
+        );
+      }
     }
-    if (this.currentFloor !== 1) {
-      return;
+  }
+
+  private isQuestCompletionSatisfied(completion: QuestCompletionRule): boolean {
+    if (completion.type === 'clear_floor') {
+      if (completion.floor === undefined || this.currentFloor !== completion.floor) {
+        return false;
+      }
+      const livingMonsters = this.monsters.filter(
+        (monster) => !monster.isDead() && !monster.isFriendlySummon
+      );
+      return livingMonsters.length === 0;
     }
 
-    const livingMonsters = this.monsters.filter((monster) => !monster.isDead() && !monster.isFriendlySummon);
-    if (livingMonsters.length > 0) {
-      return;
+    if (completion.type === 'reach_depth') {
+      const depth = completion.depth ?? 0;
+      return this.runAnalytics.maxDepthReached >= depth;
     }
 
-    if (this.player.completeQuest(questId)) {
-      this.messageLog.addMessage('Quest complete: Elder Aldric\'s Plea', MessageType.SYSTEM);
+    if (completion.type === 'have_item') {
+      if (!completion.itemId) {
+        return false;
+      }
+      const quantity = completion.quantity ?? 1;
+      return this.getInventoryQuantity(completion.itemId) >= quantity;
     }
+
+    return false;
+  }
+
+  private getQuestTurnInName(npcId: string): string {
+    const npc = this.npcs.find((entry) => entry.definitionId === npcId);
+    if (npc) {
+      return npc.name;
+    }
+    if (npcId === 'aldric') return 'Elder Aldric';
+    if (npcId === 'vex') return 'Vex';
+    if (npcId === 'zane') return 'Hermit Zane';
+    return 'the quest giver';
   }
 
   private recordPlayerDamageDealt(amount: number): void {
@@ -2291,7 +2457,8 @@ export class GameScene extends Phaser.Scene {
         console.log('Talking to', npc.name);
         this.messageLog.addMessage(`You talk to ${npc.name}.`, MessageType.SYSTEM);
         this.emitPlayerNoise(this.player.x, this.player.y, NOISE_BUDGET.PLAYER_INTERACT, 'talk_npc');
-        
+        this.refreshNpcQuestAvailability(npc);
+
         // Launch DialogueScene with NPC object
         this.scene.launch('DialogueScene', { npc: npc });
         this.scene.pause('GameScene');
@@ -3104,23 +3271,78 @@ export class GameScene extends Phaser.Scene {
       'start'
     );
     npc.definitionId = npcDef.id;
-    npc.questIds = npcDef.questsOffered ? [...npcDef.questsOffered] : [];
+    npc.questIds = this.getAvailableQuestIdsForNpc(npcDef.id);
     npc.shopInventoryIds = npcDef.inventory ? [...npcDef.inventory] : [];
+    this.populateNPCDialogues(npc, npcDef);
 
+    return npc;
+  }
+
+  private refreshNpcQuestAvailability(npc: NPC): void {
+    if (!npc.definitionId) {
+      return;
+    }
+    npc.questIds = this.getAvailableQuestIdsForNpc(npc.definitionId);
+    const npcDefinition = NPCS.find((entry) => entry.id === npc.definitionId);
+    if (npcDefinition) {
+      this.populateNPCDialogues(npc, npcDefinition);
+    }
+  }
+
+  private getAvailableQuestIdsForNpc(npcId: string): string[] {
+    const configuredQuestIds = getQuestIdsForNpc(npcId);
+    if (configuredQuestIds.length === 0) {
+      return [];
+    }
+
+    return configuredQuestIds.filter((questId) => {
+      const quest = QUEST_DEFINITIONS[questId];
+      if (!quest) {
+        return false;
+      }
+      if (
+        !isQuestUnlocked(quest, (dependencyQuestId) =>
+          this.player.isQuestRewardClaimed(dependencyQuestId)
+        )
+      ) {
+        return false;
+      }
+      return !this.player.hasAcceptedQuest(questId) && !this.player.isQuestRewardClaimed(questId);
+    });
+  }
+
+  private populateNPCDialogues(npc: NPC, npcDef: NPCDefinition): void {
+    npc.dialogues.clear();
     const dialogueNodes = npcDef.dialogue.map((dialogue) => ({
       id: dialogue.id,
       text: dialogue.text,
-      options: dialogue.options.map((option) => ({
-        id: option.text.substring(0, 20),
-        text: option.text,
-        actionId: option.action || undefined,
-        nextDialogueId: option.nextDialogueId,
-        action: option.action ? () => console.log('Action:', option.action) : undefined,
-      })),
+      options: dialogue.options
+        .filter((option) => this.isDialogueOptionVisible(option.action, npc))
+        .map((option) => ({
+          id: option.text.substring(0, 20),
+          text: option.text,
+          actionId: option.action || undefined,
+          nextDialogueId: option.nextDialogueId,
+          action: option.action ? () => console.log('Action:', option.action) : undefined,
+        })),
     }));
     npc.addDialogues(dialogueNodes);
+  }
 
-    return npc;
+  private isDialogueOptionVisible(action: string, npc: NPC): boolean {
+    if (!action) {
+      return true;
+    }
+
+    if (action === 'claim_quest_reward') {
+      return npc.definitionId ? this.getClaimableQuestForNpc(npc.definitionId) !== null : false;
+    }
+
+    if (action.startsWith('accept_quest')) {
+      return this.resolveQuestIdForAction(action, npc.questIds) !== null;
+    }
+
+    return true;
   }
 
   private findNearestValidNPCTile(

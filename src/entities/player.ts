@@ -381,6 +381,7 @@ export class Player extends Entity {
     });
     this.questFlags.set(`${quest.id}_accepted`, true);
     this.questFlags.set(`${quest.id}_completed`, false);
+    this.questFlags.set(`${quest.id}_claimed`, false);
     return true;
   }
 
@@ -392,6 +393,10 @@ export class Player extends Entity {
     return this.questFlags.get(`${questId}_completed`) === true;
   }
 
+  isQuestRewardClaimed(questId: string): boolean {
+    return this.questFlags.get(`${questId}_claimed`) === true;
+  }
+
   completeQuest(questId: string): boolean {
     const quest = this.quests.find((entry) => entry.id === questId);
     if (!quest || quest.completed) {
@@ -400,6 +405,15 @@ export class Player extends Entity {
 
     quest.completed = true;
     this.questFlags.set(`${questId}_completed`, true);
+    return true;
+  }
+
+  claimQuestReward(questId: string): boolean {
+    if (!this.isQuestCompleted(questId) || this.isQuestRewardClaimed(questId)) {
+      return false;
+    }
+
+    this.questFlags.set(`${questId}_claimed`, true);
     return true;
   }
 
