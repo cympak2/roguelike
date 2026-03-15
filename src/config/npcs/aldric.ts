@@ -67,7 +67,16 @@ export const ALDRIC_NPC: NPCDefinition =
         text: 'Thank you, brave soul! Your courage gives hope to us all. The dungeon entrance is at the southern edge of town. May the light guide your path. Return to me when you have cleared the first level, and I shall reward you well.',
         options: [
           { text: 'I will not fail you.', action: '', nextDialogueId: 'end' },
+          { text: 'Rats and goblins are too fast. I can’t catch them.', action: '', nextDialogueId: 'throwing_advice' },
           { text: 'Do you have any final advice?', action: '', nextDialogueId: 'final_advice' },
+        ],
+      },
+      {
+        id: 'throwing_advice',
+        text: 'A fair concern. Quick vermin are best answered at range. Visit Hilda and ask for throwing rocks, a bow, or a crossbow. One good ranged hit can stop them before they swarm you.',
+        options: [
+          { text: 'That helps. I will speak to Hilda.', action: '', nextDialogueId: 'end' },
+          { text: 'Any other final advice?', action: '', nextDialogueId: 'final_advice' },
         ],
       },
       {

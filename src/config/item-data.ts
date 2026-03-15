@@ -630,6 +630,32 @@ const SPICE_HERBS: Item = {
   description: 'Aromatic herbs that improve cooked meals.',
 };
 
+const EMPTY_FLASK: Item = {
+  id: 'misc_empty_flask',
+  name: 'Empty Flask',
+  glyph: '!',
+  color: '#B0E0E6',
+  type: ItemType.MISCELLANEOUS,
+  rarity: ItemRarity.COMMON,
+  value: 18,
+  weight: 0.2,
+  stackable: true,
+  description: 'A clean flask that can be filled with dungeon water.',
+};
+
+const DUNGEON_WATER_FLASK: Item = {
+  id: 'misc_flask_dungeon_water',
+  name: 'Flask of Dungeon Water',
+  glyph: '!',
+  color: '#3FA9F5',
+  type: ItemType.MISCELLANEOUS,
+  rarity: ItemRarity.UNCOMMON,
+  value: 28,
+  weight: 0.25,
+  stackable: true,
+  description: 'A sealed flask filled with potent water gathered deep underground.',
+};
+
 const SMOKE_BOMB: Item = {
   id: 'smoke_bomb',
   name: 'Smoke Bomb',
@@ -796,6 +822,8 @@ export const ITEMS: ItemDefinition[] = [
   TORCH,
   TINDERBOX,
   SPICE_HERBS,
+  EMPTY_FLASK,
+  DUNGEON_WATER_FLASK,
   SMOKE_BOMB,
   RAT_TAIL,
   BONE_FRAGMENT,

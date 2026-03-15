@@ -429,6 +429,9 @@ export class ItemSpawnSystem {
    * Check if an item is appropriate for the current floor
    */
   private isItemAppropriateForFloor(item: ItemDefinition, floorNumber: number): boolean {
+    // Filled flasks are crafted/collected state and should not spawn naturally.
+    if (item.id === 'misc_flask_dungeon_water') return false;
+
     // Basic items always available
     if (item.rarity === ItemRarity.COMMON) return true;
     

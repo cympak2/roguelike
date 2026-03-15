@@ -250,6 +250,8 @@ const WATER_LIGHTNING_BONUS_MULTIPLIER = 1.5;
 const TREE_COVER_DAMAGE_REDUCTION = 2;
 const LAVA_BURN_DAMAGE = 4;
 const BUILD_ID = 'rogue@0.0.0';
+const EMPTY_FLASK_ITEM_ID = 'misc_empty_flask';
+const DUNGEON_WATER_FLASK_ITEM_ID = 'misc_flask_dungeon_water';
 
 export class GameScene extends Phaser.Scene {
   private asciiRenderer!: ASCIIRenderer;
@@ -357,7 +359,7 @@ export class GameScene extends Phaser.Scene {
     // Initialize message log
     this.messageLog = new MessageLog();
     this.messageLog.addMessage(
-      `Welcome, ${data.selectedClass?.name || 'Warrior'}! Move with arrows/WASD. Q: ranged attack, E: eat corpse, C: cook near fire, M: make fire, V: summon wolf, L: lightning, </,: up stairs, >/.: down stairs.`
+      `Welcome, ${data.selectedClass?.name || 'Warrior'}! Move with arrows/WASD. Q: ranged attack, E: eat corpse, C: cook near fire, M: make fire, F: fill/drink water, V: summon wolf, L: lightning, </,: up stairs, >/.: down stairs.`
     );
     
     console.log('Player created:', this.player.playerClass, 'at', this.player.x, this.player.y);
@@ -612,7 +614,7 @@ export class GameScene extends Phaser.Scene {
         this.tryBreakStickFromNearbyTree();
         return;
       case 'f':
-        this.tryDrinkFromFountain();
+        this.tryHandleWaterInteraction();
         return;
       case 'x':
         this.tryDisarmNearbyTrap();
@@ -722,6 +724,12 @@ export class GameScene extends Phaser.Scene {
     const tile = this.gameMap.getTile(newX, newY);
     if (!tile) {
       console.log('No tile at destination');
+      return;
+    }
+
+    if (tile.type === TileType.WATER) {
+      this.messageLog.addMessage('The water is too deep to cross.', MessageType.SYSTEM);
+      this.render();
       return;
     }
 
@@ -1252,6 +1260,85 @@ export class GameScene extends Phaser.Scene {
     this.processTurn();
   }
 
+  private tryHandleWaterInteraction(): void {
+    if (this.tryFillFlaskFromNearbySource()) {
+      return;
+    }
+    this.tryDrinkFromFountain();
+  }
+
+  private tryFillFlaskFromNearbySource(): boolean {
+    if (this.currentFloor <= 0) {
+      return false;
+    }
+
+    if (this.getInventoryQuantity(EMPTY_FLASK_ITEM_ID) <= 0) {
+      return false;
+    }
+
+    const source = this.findAdjacentTileOfTypes([TileType.WATER, TileType.FOUNTAIN]);
+    if (!source) {
+      this.messageLog.addMessage('No water source nearby to fill your flask.', MessageType.SYSTEM);
+      this.render();
+      return true;
+    }
+
+    const waterFlaskDef = ITEMS.find((item) => item.id === DUNGEON_WATER_FLASK_ITEM_ID);
+    const emptyFlaskDef = ITEMS.find((item) => item.id === EMPTY_FLASK_ITEM_ID);
+    if (!waterFlaskDef || !emptyFlaskDef) {
+      this.messageLog.addMessage('Water flask data is missing.', MessageType.SYSTEM);
+      this.render();
+      return true;
+    }
+
+    const filledFlask = this.createInventoryItemFromDefinition(waterFlaskDef, 1);
+    if (!this.player.canAddItem(filledFlask)) {
+      this.messageLog.addMessage('Your inventory is too full to carry filled flasks.', MessageType.SYSTEM);
+      this.render();
+      return true;
+    }
+
+    if (!this.consumeInventoryItemById(EMPTY_FLASK_ITEM_ID, 1)) {
+      this.messageLog.addMessage('You fumble with your flask and fail to fill it.', MessageType.SYSTEM);
+      this.render();
+      return true;
+    }
+
+    if (!this.player.addItem(filledFlask)) {
+      this.player.addItem(this.createInventoryItemFromDefinition(emptyFlaskDef, 1));
+      this.messageLog.addMessage('You fail to secure the filled flask.', MessageType.SYSTEM);
+      this.render();
+      return true;
+    }
+
+    if (source.type === TileType.WATER) {
+      this.messageLog.addMessage('You fill an empty flask with dungeon water.', MessageType.INFO);
+    } else {
+      this.messageLog.addMessage('You bottle potent fountain water into your flask.', MessageType.INFO);
+    }
+    this.emitPlayerNoise(this.player.x, this.player.y, NOISE_BUDGET.PLAYER_USE_ITEM, 'fill_flask');
+    this.processTurn();
+    return true;
+  }
+
+  private findAdjacentTileOfTypes(types: TileType[]): { x: number; y: number; type: TileType } | null {
+    const positions = [
+      { x: this.player.x, y: this.player.y },
+      { x: this.player.x + 1, y: this.player.y },
+      { x: this.player.x - 1, y: this.player.y },
+      { x: this.player.x, y: this.player.y + 1 },
+      { x: this.player.x, y: this.player.y - 1 },
+    ];
+
+    for (const position of positions) {
+      const tileType = this.gameMap.getTile(position.x, position.y)?.type;
+      if (tileType && types.includes(tileType)) {
+        return { ...position, type: tileType };
+      }
+    }
+    return null;
+  }
+
   private tryBreakStickFromNearbyTree(): void {
     const treePositions = [
       { x: this.player.x + 1, y: this.player.y },
@@ -1724,7 +1811,7 @@ export class GameScene extends Phaser.Scene {
       return;
     }
 
-    if (!this.canGrantQuestRewards(claimableQuest.rewards)) {
+    if (!this.canGrantQuestRewardsForQuest(claimableQuest)) {
       this.messageLog.addMessage('Your inventory is too full to claim this reward.', MessageType.SYSTEM);
       this.render();
       return;
@@ -1785,18 +1872,52 @@ export class GameScene extends Phaser.Scene {
     return true;
   }
 
-  private canGrantQuestRewards(rewards: QuestReward[]): boolean {
-    return rewards.every((reward) => {
+  private canGrantQuestRewardsForQuest(quest: QuestDefinition): boolean {
+    const simulatedInventory = this.player.inventory.map((item) => ({
+      id: item.id,
+      type: item.type,
+      quantity: item.quantity,
+    }));
+
+    for (const requirement of quest.turnInRequirements ?? []) {
+      const entry = simulatedInventory.find((item) => item.id === requirement.itemId);
+      if (!entry || entry.quantity < requirement.quantity) {
+        return false;
+      }
+      if (entry.quantity === requirement.quantity) {
+        const index = simulatedInventory.indexOf(entry);
+        simulatedInventory.splice(index, 1);
+      } else {
+        entry.quantity -= requirement.quantity;
+      }
+    }
+
+    for (const reward of quest.rewards) {
       if (!reward.itemId) {
-        return true;
+        continue;
       }
       const itemDef = ITEMS.find((item) => item.id === reward.itemId);
       if (!itemDef) {
         return false;
       }
       const inventoryItem = this.createInventoryItemFromDefinition(itemDef, reward.itemQuantity ?? 1);
-      return this.player.canAddItem(inventoryItem);
-    });
+      const existing = simulatedInventory.find((item) => item.id === inventoryItem.id);
+      const isStackable = inventoryItem.type === 'potion' || inventoryItem.type === 'misc';
+      if (existing && isStackable) {
+        existing.quantity += inventoryItem.quantity;
+        continue;
+      }
+      if (simulatedInventory.length >= this.player.inventoryCapacity) {
+        return false;
+      }
+      simulatedInventory.push({
+        id: inventoryItem.id,
+        type: inventoryItem.type,
+        quantity: inventoryItem.quantity,
+      });
+    }
+
+    return true;
   }
 
   private grantQuestRewards(rewards: QuestReward[]): void {
@@ -2137,6 +2258,7 @@ export class GameScene extends Phaser.Scene {
       return npc.name;
     }
     if (npcId === 'aldric') return 'Elder Aldric';
+    if (npcId === 'maren') return 'Healer Maren';
     if (npcId === 'vex') return 'Vex';
     if (npcId === 'zane') return 'Hermit Zane';
     return 'the quest giver';
@@ -3885,6 +4007,10 @@ export class GameScene extends Phaser.Scene {
           case TileType.WATER:
             glyph = '~';
             color = tile.visible ? 0x0088ff : 0x004488;
+            break;
+          case TileType.LAVA:
+            glyph = '~';
+            color = tile.visible ? 0xff6600 : 0x7a2e00;
             break;
           case TileType.GRASS:
             glyph = ',';

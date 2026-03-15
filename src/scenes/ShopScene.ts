@@ -323,7 +323,9 @@ export class ShopScene extends Phaser.Scene {
       return inventoryItems.filter((item) => item.type === ItemType.ARMOR);
     }
     if (shopAction.includes('potion') || shopAction.includes('health') || shopAction.includes('mana')) {
-      return inventoryItems.filter((item) => item.type === ItemType.POTION);
+      return inventoryItems.filter(
+        (item) => item.type === ItemType.POTION || item.id === 'misc_empty_flask'
+      );
     }
     if (shopAction.includes('antidote')) {
       return inventoryItems.filter((item) => item.id.includes('antidote') || item.id.includes('cure_poison'));

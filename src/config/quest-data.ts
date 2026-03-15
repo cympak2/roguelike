@@ -93,6 +93,20 @@ export const QUEST_DEFINITIONS: Record<string, QuestDefinition> = {
       { itemId: 'potion_mana', itemQuantity: 2 },
     ],
   },
+  bring_dungeon_water: {
+    id: 'bring_dungeon_water',
+    title: 'Water for the Healer',
+    objective: 'Fill a flask with dungeon water and bring it to Healer Maren.',
+    turnInNpcId: 'maren',
+    acceptActions: ['accept_quest_dungeon_water'],
+    completion: { type: 'have_item', itemId: 'misc_flask_dungeon_water', quantity: 1 },
+    turnInRequirements: [{ itemId: 'misc_flask_dungeon_water', quantity: 1 }],
+    rewards: [
+      { gold: 70 },
+      { itemId: 'potion_health', itemQuantity: 1 },
+      { itemId: 'misc_empty_flask', itemQuantity: 1 },
+    ],
+  },
   find_dawnbringer: {
     id: 'find_dawnbringer',
     title: 'Blade of First Light',
@@ -110,6 +124,7 @@ export const QUEST_DEFINITIONS: Record<string, QuestDefinition> = {
 
 export const QUEST_IDS_BY_NPC: Record<string, string[]> = {
   aldric: ['clear_dungeon_level_1', 'clear_dungeon_level_2'],
+  maren: ['bring_dungeon_water'],
   vex: ['retrieve_stolen_ring'],
   zane: ['find_lost_amulet', 'collect_keystones', 'find_dawnbringer'],
 };
@@ -128,4 +143,3 @@ export function isQuestUnlocked(
 export function getQuestIdsForNpc(npcId: string): string[] {
   return QUEST_IDS_BY_NPC[npcId] ? [...QUEST_IDS_BY_NPC[npcId]] : [];
 }
-

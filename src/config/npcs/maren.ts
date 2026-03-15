@@ -16,9 +16,33 @@ export const MAREN_NPC: NPCDefinition =
         options: [
           { text: 'Please heal my wounds. [Free]', action: 'heal_player', nextDialogueId: 'heal_complete' },
           { text: 'I need healing potions.', action: '', nextDialogueId: 'shop_potions' },
+          { text: 'Do you need help gathering ingredients?', action: '', nextDialogueId: 'dungeon_water_request' },
           { text: 'What other services do you offer?', action: '', nextDialogueId: 'services' },
           { text: 'Tell me about your healing arts.', action: '', nextDialogueId: 'about_healing' },
           { text: 'I am fine, thank you.', action: '', nextDialogueId: 'farewell' },
+        ],
+      },
+      {
+        id: 'dungeon_water_request',
+        text: 'Actually, yes. I need fresh water from deep in the dungeon to refine stronger remedies. Bring me one filled flask and I will reward your effort.',
+        options: [
+          { text: 'I will bring you dungeon water.', action: 'accept_quest_dungeon_water', nextDialogueId: 'dungeon_water_accepted' },
+          { text: 'I have your dungeon water flask.', action: 'claim_quest_reward', nextDialogueId: 'dungeon_water_complete' },
+          { text: 'Not right now.', action: '', nextDialogueId: 'start' },
+        ],
+      },
+      {
+        id: 'dungeon_water_accepted',
+        text: 'Thank you. You can fill an empty flask near underground water or a dungeon fountain. Return safely.',
+        options: [
+          { text: 'I will return with a filled flask.', action: '', nextDialogueId: 'end' },
+        ],
+      },
+      {
+        id: 'dungeon_water_complete',
+        text: 'Excellent work. This is exactly what I needed. Here is your reward, and take a fresh empty flask for your next expedition.',
+        options: [
+          { text: 'Glad I could help.', action: '', nextDialogueId: 'end' },
         ],
       },
       {
@@ -165,5 +189,5 @@ export const MAREN_NPC: NPCDefinition =
         options: [],
       },
     ],
-    inventory: ['potion_health', 'potion_mana', 'potion_cure_poison', 'potion_strength'],
+    inventory: ['potion_health', 'potion_mana', 'potion_cure_poison', 'potion_strength', 'misc_empty_flask'],
   };

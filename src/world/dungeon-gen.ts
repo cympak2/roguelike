@@ -88,6 +88,7 @@ export class DungeonGenerator {
 
     // Place stairs
     this.placeStairs(map, floorNumber);
+    this.placeEnvironmentalFeatures(map, leafRooms, floorNumber);
     this.placeCampfires(map, leafRooms, floorNumber);
 
     // Place special features based on floor
@@ -457,6 +458,99 @@ export class DungeonGenerator {
         break;
       }
     }
+  }
+
+  private placeEnvironmentalFeatures(map: GameMap, rooms: Room[], floorNumber: number): void {
+    if (rooms.length === 0 || floorNumber <= 0) {
+      return;
+    }
+
+    const waterPoolCount = floorNumber >= 2 ? this.random.randomInt(1, floorNumber >= 6 ? 3 : 2) : 0;
+    const lavaPoolCount = floorNumber >= 5 ? this.random.randomInt(1, floorNumber >= 8 ? 3 : 2) : 0;
+
+    for (let i = 0; i < waterPoolCount; i++) {
+      this.placeEnvironmentalPool(map, rooms, TileType.WATER, 6, 14);
+    }
+    for (let i = 0; i < lavaPoolCount; i++) {
+      this.placeEnvironmentalPool(map, rooms, TileType.LAVA, 4, 10);
+    }
+  }
+
+  private placeEnvironmentalPool(
+    map: GameMap,
+    rooms: Room[],
+    type: TileType.WATER | TileType.LAVA,
+    minSize: number,
+    maxSize: number
+  ): void {
+    const eligibleRooms = rooms.filter((room) => room.width >= 6 && room.height >= 6 && room.center);
+    if (eligibleRooms.length === 0) {
+      return;
+    }
+
+    const seedRoom = eligibleRooms[this.random.randomInt(0, eligibleRooms.length - 1)];
+    if (!seedRoom?.center) {
+      return;
+    }
+
+    let x = seedRoom.center.x + this.random.randomInt(-2, 2);
+    let y = seedRoom.center.y + this.random.randomInt(-2, 2);
+    if (!this.isEnvironmentalTileCandidate(map, x, y)) {
+      return;
+    }
+
+    const targetSize = this.random.randomInt(minSize, maxSize);
+    let placed = 0;
+
+    for (let attempts = 0; attempts < targetSize * 8 && placed < targetSize; attempts++) {
+      if (this.isEnvironmentalTileCandidate(map, x, y)) {
+        map.setTile(x, y, type, false, false);
+        placed++;
+      }
+
+      const directions = [
+        { dx: 1, dy: 0 },
+        { dx: -1, dy: 0 },
+        { dx: 0, dy: 1 },
+        { dx: 0, dy: -1 },
+      ];
+      const next = directions[this.random.randomInt(0, directions.length - 1)];
+      x += next.dx;
+      y += next.dy;
+    }
+  }
+
+  private isEnvironmentalTileCandidate(map: GameMap, x: number, y: number): boolean {
+    const tile = map.getTile(x, y);
+    if (!tile || tile.type !== TileType.FLOOR) {
+      return false;
+    }
+
+    const guardedTypes = new Set<TileType>([
+      TileType.STAIRS_UP,
+      TileType.STAIRS_DOWN,
+      TileType.DOOR_OPEN,
+      TileType.DOOR_CLOSED,
+      TileType.CHEST_CLOSED,
+      TileType.CHEST_OPEN,
+      TileType.ALTAR,
+      TileType.CAMPFIRE,
+      TileType.FOUNTAIN,
+    ]);
+
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        const nearby = map.getTile(x + dx, y + dy);
+        if (!nearby) {
+          continue;
+        }
+        if (guardedTypes.has(nearby.type)) {
+          return false;
+        }
+      }
+    }
+
+    return true;
   }
 
   private getFloorTiles(map: GameMap): Array<{ x: number; y: number }> {
