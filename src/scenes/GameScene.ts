@@ -1739,6 +1739,10 @@ export class GameScene extends Phaser.Scene {
   }
 
   private getClaimableQuestForNpc(npcId: string): QuestDefinition | null {
+    if (!this.player) {
+      return null;
+    }
+
     const questIds = getQuestIdsForNpc(npcId);
     for (const questId of questIds) {
       if (!this.player.isQuestCompleted(questId) || this.player.isQuestRewardClaimed(questId)) {
@@ -2684,12 +2688,18 @@ export class GameScene extends Phaser.Scene {
       case 'arrowdown':
       case 's':
         this.pickupSelectionIndex = Math.min(
-          this.pickupSelectionItems.length - 1,
+          this.pickupSelectionItems.length,
           this.pickupSelectionIndex + 1
         );
         this.drawPickupSelectionOverlay();
         break;
       case 'enter': {
+        if (this.pickupSelectionIndex === this.pickupSelectionItems.length) {
+          this.pickupAllFromSelection();
+          this.closePickupSelection();
+          this.processTurn();
+          break;
+        }
         const selected = this.pickupSelectionItems[this.pickupSelectionIndex];
         this.closePickupSelection();
         this.pickupSingleItem(selected);
@@ -2715,6 +2725,8 @@ export class GameScene extends Phaser.Scene {
       const marker = i === this.pickupSelectionIndex ? '>' : ' ';
       lines.push(`${marker} ${item.name}`);
     }
+    const allMarker = this.pickupSelectionIndex === this.pickupSelectionItems.length ? '>' : ' ';
+    lines.push(`${allMarker} All`);
     lines.push('');
     lines.push('Up/Down: select  Enter: pick  Esc: cancel');
 
@@ -2726,6 +2738,34 @@ export class GameScene extends Phaser.Scene {
       padding: { x: 8, y: 8 },
     });
     this.pickupOverlay.setDepth(1000);
+  }
+
+  private pickupAllFromSelection(): void {
+    let pickedCount = 0;
+    let blockedCount = 0;
+
+    for (const item of this.pickupSelectionItems) {
+      const inventoryItem = this.toInventoryItem(item);
+      if (!this.player.addItem(inventoryItem)) {
+        blockedCount++;
+        continue;
+      }
+
+      this.gameMap.removeItem(item);
+      pickedCount++;
+    }
+
+    if (pickedCount > 0) {
+      this.messageLog.addMessage(`Picked up ${pickedCount} item(s).`, MessageType.SYSTEM);
+      this.emitPlayerNoise(this.player.x, this.player.y, NOISE_BUDGET.PLAYER_PICKUP, 'pickup_item');
+    }
+
+    if (blockedCount > 0) {
+      this.messageLog.addMessage(
+        `${blockedCount} item(s) could not be picked up (inventory full).`,
+        MessageType.SYSTEM
+      );
+    }
   }
 
   private isCookingSelectionActive(): boolean {
@@ -3295,6 +3335,13 @@ export class GameScene extends Phaser.Scene {
       return [];
     }
 
+    if (!this.player) {
+      return configuredQuestIds.filter((questId) => {
+        const quest = QUEST_DEFINITIONS[questId];
+        return !!quest && (!quest.requiresCompletedQuestIds || quest.requiresCompletedQuestIds.length === 0);
+      });
+    }
+
     return configuredQuestIds.filter((questId) => {
       const quest = QUEST_DEFINITIONS[questId];
       if (!quest) {
@@ -3332,6 +3379,10 @@ export class GameScene extends Phaser.Scene {
   private isDialogueOptionVisible(action: string, npc: NPC): boolean {
     if (!action) {
       return true;
+    }
+
+    if (!this.player) {
+      return action !== 'claim_quest_reward' && !action.startsWith('accept_quest');
     }
 
     if (action === 'claim_quest_reward') {
