@@ -11,6 +11,11 @@ import { DARK_MAGE } from './monsters/dark-mage';
 import { GIANT_SPIDER } from './monsters/giant-spider';
 import { TROLL } from './monsters/troll';
 import { WRAITH } from './monsters/wraith';
+import { KOBOLD_SLINGER } from './monsters/kobold-slinger';
+import { BANDIT_ARCHER } from './monsters/bandit-archer';
+import { CROSSBOW_RAIDER } from './monsters/crossbow-raider';
+import { VOID_ACOLYTE } from './monsters/void-acolyte';
+import { STONE_THROWER_OGRE } from './monsters/stone-thrower-ogre';
 import { DRAGON_WYRMLING } from './monsters/dragon-wyrmling';
 import { LICH_KING } from './monsters/lich-king';
 import type { MonsterDefinition } from './monsters/types';
@@ -27,10 +32,15 @@ export const MONSTERS: MonsterDefinition[] = [
   RAT,
   SKELETON,
   GOBLIN,
+  KOBOLD_SLINGER,
+  BANDIT_ARCHER,
   ORC_WARRIOR,
   DARK_MAGE,
+  CROSSBOW_RAIDER,
+  VOID_ACOLYTE,
   GIANT_SPIDER,
   TROLL,
+  STONE_THROWER_OGRE,
   WRAITH,
   DRAGON_WYRMLING,
   LICH_KING,

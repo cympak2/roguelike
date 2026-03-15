@@ -20,7 +20,7 @@ import { MonsterSpawnSystem } from '../systems/monster-spawn-system';
 import { ItemSpawnSystem } from '../systems/item-spawn-system';
 import { MonsterAISystem, ActionType } from '../systems/monster-ai-system';
 import { NoiseSystem } from '../systems/noise-system';
-import { ITEMS, ItemType, type ItemDefinition } from '../config/item-data';
+import { ITEMS, ItemType, type ItemDefinition, type Weapon } from '../config/item-data';
 import {
   QUEST_DEFINITIONS,
   getQuestIdsForNpc,
@@ -242,6 +242,10 @@ const LIGHTNING_SPELL_KEY = 'l';
 const LIGHTNING_SPELL_RANGE = 6;
 const LIGHTNING_SPELL_MANA_COST = 18;
 const LIGHTNING_SPELL_POWER = 3;
+const PLAYER_RANGED_ATTACK_KEY = 'q';
+const ARCANE_BOLT_RANGE = 6;
+const ARCANE_BOLT_MANA_COST = 8;
+const ARCANE_BOLT_POWER = 1.4;
 const WATER_LIGHTNING_BONUS_MULTIPLIER = 1.5;
 const TREE_COVER_DAMAGE_REDUCTION = 2;
 const LAVA_BURN_DAMAGE = 4;
@@ -353,7 +357,7 @@ export class GameScene extends Phaser.Scene {
     // Initialize message log
     this.messageLog = new MessageLog();
     this.messageLog.addMessage(
-      `Welcome, ${data.selectedClass?.name || 'Warrior'}! Move with arrows/WASD. E: eat corpse, C: cook near fire, M: make fire, V: summon wolf, L: lightning, </,: up stairs, >/.: down stairs.`
+      `Welcome, ${data.selectedClass?.name || 'Warrior'}! Move with arrows/WASD. Q: ranged attack, E: eat corpse, C: cook near fire, M: make fire, V: summon wolf, L: lightning, </,: up stairs, >/.: down stairs.`
     );
     
     console.log('Player created:', this.player.playerClass, 'at', this.player.x, this.player.y);
@@ -502,7 +506,9 @@ export class GameScene extends Phaser.Scene {
       key === 'c' ||
       key === 'm' ||
       key === 'e' ||
+      key === COMPANION_SPELL_KEY ||
       key === LIGHTNING_SPELL_KEY ||
+      key === PLAYER_RANGED_ATTACK_KEY ||
       key === ',' ||
       key === '.' ||
       key === '<' ||
@@ -628,6 +634,9 @@ export class GameScene extends Phaser.Scene {
         return;
       case LIGHTNING_SPELL_KEY:
         this.tryCastLightningBolt();
+        return;
+      case PLAYER_RANGED_ATTACK_KEY:
+        this.tryPerformPlayerRangedAttack();
         return;
       case '<':
       case ',':
@@ -2999,6 +3008,94 @@ export class GameScene extends Phaser.Scene {
     this.processTurn();
   }
 
+  private tryPerformPlayerRangedAttack(): void {
+    const rangedWeapon = this.getEquippedRangedWeapon();
+    if (rangedWeapon) {
+      this.performWeaponRangedAttack(rangedWeapon);
+      return;
+    }
+
+    if (this.player.playerClass === 'mage') {
+      this.performArcaneBoltAttack();
+      return;
+    }
+
+    this.messageLog.addMessage(
+      'Equip a ranged weapon (rocks, bow, crossbow, wand, or spear) to attack from distance.',
+      MessageType.SYSTEM
+    );
+    this.render();
+  }
+
+  private getEquippedRangedWeapon(): Weapon | null {
+    const equippedWeapon = this.player.equipment.weapon;
+    if (!equippedWeapon) {
+      return null;
+    }
+
+    const weaponDefinition = ITEMS.find(
+      (item): item is Weapon => item.id === equippedWeapon.id && item.type === ItemType.WEAPON
+    );
+    if (!weaponDefinition || weaponDefinition.range <= 1) {
+      return null;
+    }
+
+    return weaponDefinition;
+  }
+
+  private performWeaponRangedAttack(weapon: Weapon): void {
+    const target = this.findNearestVisibleHostileMonster(this.player.x, this.player.y, weapon.range);
+    if (!target) {
+      this.messageLog.addMessage(`No hostile target in range for ${weapon.name}.`, MessageType.SYSTEM);
+      this.render();
+      return;
+    }
+
+    const distance = Math.sqrt((target.x - this.player.x) ** 2 + (target.y - this.player.y) ** 2);
+    const result = this.combatSystem.rangedAttack(this.player, target, distance);
+    this.messageLog.addMessage(result.message, MessageType.COMBAT);
+    this.recordPlayerDamageDealt(result.damage);
+    this.applyDurabilityWearOnPlayerAttack();
+
+    if (target.isDead()) {
+      this.handleHostileMonsterDeath(target, true);
+    }
+
+    this.emitPlayerNoise(this.player.x, this.player.y, NOISE_BUDGET.PLAYER_RANGED, 'player_ranged_weapon');
+    this.processTurn();
+  }
+
+  private performArcaneBoltAttack(): void {
+    const target = this.findNearestVisibleHostileMonster(this.player.x, this.player.y, ARCANE_BOLT_RANGE);
+    if (!target) {
+      this.messageLog.addMessage('No hostile target in sight for Arcane Bolt.', MessageType.SYSTEM);
+      this.render();
+      return;
+    }
+
+    const spell: Spell = {
+      name: 'Arcane Bolt',
+      manaCost: ARCANE_BOLT_MANA_COST,
+      spellPower: ARCANE_BOLT_POWER,
+      damageType: 'arcane',
+    };
+
+    const result = this.combatSystem.magicAttack(this.player, target, spell);
+    this.messageLog.addMessage(result.message, MessageType.COMBAT);
+    if (!result.hit) {
+      this.render();
+      return;
+    }
+    this.recordPlayerDamageDealt(result.damage);
+
+    if (target.isDead()) {
+      this.handleHostileMonsterDeath(target, true);
+    }
+
+    this.emitPlayerNoise(this.player.x, this.player.y, NOISE_BUDGET.PLAYER_RANGED, 'player_arcane_bolt');
+    this.processTurn();
+  }
+
   private tryCastLightningBolt(): void {
     if (this.currentFloor <= 0) {
       this.messageLog.addMessage('Lightning casting is only available in the dungeon.', MessageType.SYSTEM);
@@ -3900,7 +3997,7 @@ export class GameScene extends Phaser.Scene {
     this.asciiRenderer.drawText(
       1,
       1,
-      'Move: Arrows/WASD | G pickup | I inv | T talk | F drink | X disarm | R altar | V summon | L lightning | </> stairs',
+      'Move: Arrows/WASD | Q ranged | G pickup | I inv | T talk | F drink | X disarm | R altar | V summon | L lightning | </> stairs',
       0xaaaaaa
     );
 

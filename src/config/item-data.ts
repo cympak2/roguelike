@@ -224,10 +224,42 @@ const BOW: Weapon = {
   value: 140,
   weight: 2.0,
   stackable: false,
-  description: 'A ranged weapon for hunters and scouts. Requires arrows.',
+  description: 'A ranged weapon for hunters and scouts.',
   damage: 5,
   attackBonus: 1,
   range: 5,
+};
+
+const CROSSBOW: Weapon = {
+  id: 'weapon_crossbow',
+  name: 'Crossbow',
+  glyph: '}',
+  color: '#7A5A3A',
+  type: ItemType.WEAPON,
+  rarity: ItemRarity.RARE,
+  value: 210,
+  weight: 3.2,
+  stackable: false,
+  description: 'A heavy ranged weapon that hits hard at long distance.',
+  damage: 8,
+  attackBonus: 2,
+  range: 6,
+};
+
+const THROWING_ROCKS: Weapon = {
+  id: 'weapon_throwing_rocks',
+  name: 'Throwing Rocks',
+  glyph: '*',
+  color: '#888888',
+  type: ItemType.WEAPON,
+  rarity: ItemRarity.COMMON,
+  value: 25,
+  weight: 0.8,
+  stackable: false,
+  description: 'A pouch of balanced stones useful for simple ranged attacks.',
+  damage: 4,
+  attackBonus: 0,
+  range: 4,
 };
 
 const STICK: Weapon = {
@@ -729,6 +761,8 @@ export const ITEMS: ItemDefinition[] = [
   STAFF,
   WAND,
   BOW,
+  CROSSBOW,
+  THROWING_ROCKS,
   STICK,
 
   // Armor

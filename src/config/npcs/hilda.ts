@@ -163,5 +163,5 @@ export const HILDA_NPC: NPCDefinition =
         options: [],
       },
     ],
-    inventory: ['weapon_dagger', 'weapon_short_sword', 'weapon_long_sword', 'weapon_battle_axe', 'weapon_spear', 'armor_leather', 'armor_chain_mail', 'armor_plate', 'armor_shield'],
+    inventory: ['weapon_dagger', 'weapon_short_sword', 'weapon_long_sword', 'weapon_battle_axe', 'weapon_spear', 'weapon_bow', 'weapon_crossbow', 'weapon_throwing_rocks', 'armor_leather', 'armor_chain_mail', 'armor_plate', 'armor_shield'],
   };
