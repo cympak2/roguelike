@@ -644,7 +644,10 @@ export class DungeonGenerator {
           continue;
         }
 
-        if (map.getTrapAt(x, y)) {
+        const existingTrap = typeof (map as GameMap & { getTrapAt?: (tx: number, ty: number) => unknown }).getTrapAt === 'function'
+          ? map.getTrapAt(x, y)
+          : map.traps.find((trap) => trap.x === x && trap.y === y && !trap.disarmed);
+        if (existingTrap) {
           continue;
         }
 

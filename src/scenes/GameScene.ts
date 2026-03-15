@@ -249,6 +249,7 @@ const ARCANE_BOLT_POWER = 1.4;
 const WATER_LIGHTNING_BONUS_MULTIPLIER = 1.5;
 const TREE_COVER_DAMAGE_REDUCTION = 2;
 const LAVA_BURN_DAMAGE = 4;
+const CAMPFIRE_BURN_DAMAGE = 4;
 const BUILD_ID = 'rogue@0.0.0';
 const EMPTY_FLASK_ITEM_ID = 'misc_empty_flask';
 const DUNGEON_WATER_FLASK_ITEM_ID = 'misc_flask_dungeon_water';
@@ -2386,6 +2387,33 @@ export class GameScene extends Phaser.Scene {
       }
       if (monster.isFriendlySummon) {
         this.messageLog.addMessage(`${monster.name} is consumed by lava.`, MessageType.WARNING);
+      } else {
+        this.handleHostileMonsterDeath(monster, false);
+        continue;
+      }
+      this.gameMap.removeEntity(monster);
+      this.monsterAISystem.cleanupMonster(monster);
+    }
+
+    const monstersOnCampfire = this.monsters.filter((monster) => {
+      if (monster.isDead()) {
+        return false;
+      }
+      const tile = this.gameMap.getTile(monster.x, monster.y);
+      return tile?.type === TileType.CAMPFIRE;
+    });
+
+    for (const monster of monstersOnCampfire) {
+      const damage = monster.takeDamage(CAMPFIRE_BURN_DAMAGE);
+      const tile = this.gameMap.getTile(monster.x, monster.y);
+      if (tile?.visible) {
+        this.messageLog.addMessage(`${monster.name} is burned by fire (${damage}).`, MessageType.DAMAGE);
+      }
+      if (!monster.isDead()) {
+        continue;
+      }
+      if (monster.isFriendlySummon) {
+        this.messageLog.addMessage(`${monster.name} is burned to ash.`, MessageType.WARNING);
       } else {
         this.handleHostileMonsterDeath(monster, false);
         continue;
