@@ -16,6 +16,7 @@ export const MAREN_NPC: NPCDefinition =
         options: [
           { text: 'Please heal my wounds. [Free]', action: 'heal_player', nextDialogueId: 'heal_complete' },
           { text: 'I need healing potions.', action: '', nextDialogueId: 'shop_potions' },
+          { text: 'How are the recovery wards holding?', action: 'recovery_phase_reflection', nextDialogueId: 'recovery_reflection' },
           { text: 'Do you need help gathering ingredients?', action: '', nextDialogueId: 'dungeon_water_request' },
           { text: 'What other services do you offer?', action: '', nextDialogueId: 'services' },
           { text: 'Tell me about your healing arts.', action: '', nextDialogueId: 'about_healing' },
@@ -176,6 +177,14 @@ export const MAREN_NPC: NPCDefinition =
         options: [
           { text: 'Thank you for the advice.', action: '', nextDialogueId: 'end' },
           { text: 'For now, I need healing.', action: 'heal_player', nextDialogueId: 'heal_complete' },
+        ],
+      },
+      {
+        id: 'recovery_reflection',
+        text: 'The fighting is over, but recovery has only begun. I am treating workers, blessing supply runs, and preparing tonics for those clearing rubble.',
+        options: [
+          { text: 'I will keep bringing back what the town needs.', action: '', nextDialogueId: 'start' },
+          { text: 'Thank you for caring for everyone.', action: '', nextDialogueId: 'end' },
         ],
       },
       {

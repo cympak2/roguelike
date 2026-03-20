@@ -17,6 +17,8 @@ export const ALDRIC_NPC: NPCDefinition =
           { text: 'Tell me more about this danger.', action: '', nextDialogueId: 'quest_details' },
           { text: 'I am ready to help!', action: 'accept_quest', nextDialogueId: 'quest_accepted' },
           { text: 'I have completed a task for you.', action: 'claim_quest_reward', nextDialogueId: 'end' },
+          { text: 'How goes the recovery effort?', action: 'recovery_milestone_response', nextDialogueId: 'recovery_status' },
+          { text: 'What task should I handle next?', action: 'recovery_task_hook', nextDialogueId: 'recovery_task_hook' },
           { text: 'What reward do you offer?', action: '', nextDialogueId: 'reward_info' },
           { text: 'Perhaps another time.', action: '', nextDialogueId: 'farewell' },
         ],
@@ -84,6 +86,22 @@ export const ALDRIC_NPC: NPCDefinition =
         text: 'Trust your instincts. Watch for traps. And remember - not all who dwell in darkness are evil. Some may even help you, if approached with wisdom rather than steel.',
         options: [
           { text: 'Wise words. Farewell, Elder.', action: '', nextDialogueId: 'end' },
+        ],
+      },
+      {
+        id: 'recovery_status',
+        text: 'Your victory over the Lich gave us a chance to rebuild. We are securing roads, tending the injured, and shoring up damaged homes one task at a time.',
+        options: [
+          { text: 'I can keep helping. What is next?', action: 'recovery_task_hook', nextDialogueId: 'recovery_task_hook' },
+          { text: 'I will check in with the others.', action: '', nextDialogueId: 'start' },
+        ],
+      },
+      {
+        id: 'recovery_task_hook',
+        text: 'Our recovery board tracks urgent work in sequence. Complete each assignment and report back so we can unlock the next effort safely.',
+        options: [
+          { text: 'Understood. I will keep the town moving forward.', action: '', nextDialogueId: 'end' },
+          { text: 'Remind me how progress is going.', action: 'recovery_milestone_response', nextDialogueId: 'recovery_status' },
         ],
       },
       {

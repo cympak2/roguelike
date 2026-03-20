@@ -708,6 +708,19 @@ const STOLEN_RING: Item = {
   description: 'A tarnished ring infused with lingering magical residue.',
 };
 
+const AMULET_OF_PROTECTION: Item = {
+  id: 'misc_amulet_protection',
+  name: 'Amulet of Protection',
+  glyph: 'o',
+  color: '#7FFFD4',
+  type: ItemType.MISCELLANEOUS,
+  rarity: ItemRarity.RARE,
+  value: 120,
+  weight: 0.1,
+  stackable: false,
+  description: 'A warded amulet that hums with protective magic.',
+};
+
 const SPIDER_SILK: Item = {
   id: 'misc_spider_silk',
   name: 'Spider Silk',
@@ -828,6 +841,7 @@ export const ITEMS: ItemDefinition[] = [
   RAT_TAIL,
   BONE_FRAGMENT,
   STOLEN_RING,
+  AMULET_OF_PROTECTION,
   SPIDER_SILK,
   POISON_FANG,
   TROLL_HIDE,

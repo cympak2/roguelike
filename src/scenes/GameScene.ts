@@ -1,7 +1,13 @@
 import Phaser from 'phaser';
 import { ASCIIRenderer } from '../ui/ascii-renderer';
 import { CharacterClass } from '../config/class-data';
-import { Player } from '../entities/player';
+import {
+  Player,
+  type Equipment,
+  type InventoryItem,
+  type PlayerClass,
+  type QuestObjective,
+} from '../entities/player';
 import { NPC, NPCType as EntityNPCType } from '../entities/npc';
 import { Monster, AIBehavior } from '../entities/monster';
 import {
@@ -11,7 +17,11 @@ import {
   type NPCDefinition,
 } from '../config/npc-data';
 import { GameMap, TileType, type Item as GroundItem, type Trap } from '../world/map';
-import { TownGenerator, type NPCSpawnPoint } from '../world/town-gen';
+import {
+  TownGenerator,
+  type NPCSpawnPoint,
+  type TownGenerationOptions,
+} from '../world/town-gen';
 import { DungeonGenerator } from '../world/dungeon-gen';
 import { fovSystem } from '../world/fov';
 import { MessageLog, MessageType } from '../ui/message-log';
@@ -20,10 +30,12 @@ import { MonsterSpawnSystem } from '../systems/monster-spawn-system';
 import { ItemSpawnSystem } from '../systems/item-spawn-system';
 import { MonsterAISystem, ActionType } from '../systems/monster-ai-system';
 import { NoiseSystem } from '../systems/noise-system';
+import type { QuestLogSceneInitData } from './QuestLogScene';
 import { ITEMS, ItemType, type ItemDefinition, type Weapon } from '../config/item-data';
 import {
   QUEST_DEFINITIONS,
   getQuestIdsForNpc,
+  isQuestAvailableInPhase,
   isQuestUnlocked,
   type QuestCompletionRule,
   type QuestDefinition,
@@ -31,14 +43,37 @@ import {
 } from '../config/quest-data';
 import { getMonsterTemplate, type MonsterPhaseDefinition } from '../config/monster-data';
 import { ensureDurability, getMissingDurability } from '../utils/durability';
+import { createGameSaveManager } from '../utils/save-manager';
+import {
+  FLOOR_SNAPSHOT_DTO_VERSION,
+  type DungeonFloorSnapshotSaveDataV1,
+  type FloorItemSnapshotSaveData,
+  type FloorMapSnapshotSaveData,
+  type FloorMonsterSnapshotSaveData,
+  type FloorNPCSnapshotSaveData,
+  type FloorSnapshotsSaveData,
+  type FloorTrapSnapshotSaveData,
+  type GameSaveState,
+  type PlayerSaveData,
+} from '../utils/save-contract';
 import type { PlayerStatusEffectType, PlayerStatusTickEvent } from '../types/status-effects';
 
 type DungeonGenerationMode = 'persistent' | 'regenerating';
+type GamePhase = 'dungeon' | 'post_lich_recovery';
 
 interface DungeonFloorState {
   map: GameMap;
   monsters: Monster[];
   npcs: NPC[];
+}
+
+interface RestoredDungeonFloorState extends DungeonFloorState {
+  floor: number;
+}
+
+interface FloorRestoreResult {
+  currentFloorState: RestoredDungeonFloorState | null;
+  fallbackWarnings: string[];
 }
 
 interface AltarStatDelta {
@@ -253,6 +288,10 @@ const CAMPFIRE_BURN_DAMAGE = 4;
 const BUILD_ID = 'rogue@0.0.0';
 const EMPTY_FLASK_ITEM_ID = 'misc_empty_flask';
 const DUNGEON_WATER_FLASK_ITEM_ID = 'misc_flask_dungeon_water';
+const MINING_ROAD_UNLOCK_NUMERATOR = 3;
+const MINING_ROAD_UNLOCK_DENOMINATOR = 5;
+const AUTOSAVE_INTERVAL_MS = 60_000;
+const MIN_SAVE_INTERVAL_MS = 5_000;
 
 export class GameScene extends Phaser.Scene {
   private asciiRenderer!: ASCIIRenderer;
@@ -264,10 +303,16 @@ export class GameScene extends Phaser.Scene {
   private currentFloor: number = 0; // 0 = town
   private dungeonGenerationMode: DungeonGenerationMode = 'persistent';
   private dungeonFloorStates = new Map<number, DungeonFloorState>();
+  private lichDefeated: boolean = false;
+  private gamePhase: GamePhase = 'dungeon';
+  private recoveryTasksCompleted: number = 0;
+  private recoveryTasksTotal: number = 0;
 
   // Idle power control
   private isLoopSleeping: boolean = false;
   private idleSleepTimer: number | null = null;
+  private idleSleepTimerGeneration: number = 0;
+  private isFloorTransitioning: boolean = false;
   private readonly idleSleepDelayMs: number = 120;
 
   // Game systems
@@ -295,40 +340,83 @@ export class GameScene extends Phaser.Scene {
     causeOfDeath: 'Unknown',
     buildUsed: BUILD_ID,
   };
+  private readonly gameSaveManager = createGameSaveManager();
+  private restoreFallbackNotice: string | null = null;
+  private autosaveIntervalId: number | null = null;
+  private lastSaveTimestampMs: number = 0;
 
   constructor() {
     super({ key: 'GameScene' });
   }
 
-  init(data: { selectedClass?: CharacterClass }): void {
-    const playerClass = (data.selectedClass?.name.toLowerCase() || 'warrior') as 'warrior' | 'mage' | 'rogue';
+  init(data: { selectedClass?: CharacterClass; continueFromSave?: boolean }): void {
+    const fallbackClass = this.getPlayerClassFromSelection(data.selectedClass);
     console.log('=== GAME INIT ===');
-    console.log('Selected class:', playerClass);
-    
+    console.log('Selected class:', fallbackClass);
+    console.log('Continue from save requested:', Boolean(data.continueFromSave));
+
+    if (data.continueFromSave) {
+      const hasSavedData = this.gameSaveManager.hasSave();
+      const savedState = this.gameSaveManager.load();
+
+      if (savedState) {
+        this.restoreFallbackNotice = null;
+        this.initializeFromSavedState(savedState, fallbackClass);
+        console.log('Continue flow restored save successfully');
+        return;
+      }
+
+      if (hasSavedData) {
+        this.restoreFallbackNotice = 'Saved data was invalid. It was cleared and a new run has started.';
+        console.warn('Save data was present but invalid/incompatible. Clearing stale save and starting a new game.');
+        this.gameSaveManager.clear();
+      } else {
+        this.restoreFallbackNotice = 'No save was found. Started a new run instead.';
+        console.warn('Continue requested but no save data was found. Starting a new game instead.');
+      }
+    }
+
+    this.initializeFreshGame(data.selectedClass, fallbackClass);
+  }
+
+  private initializeFreshGame(selectedClass: CharacterClass | undefined, playerClass: PlayerClass): void {
+    this.currentFloor = 0;
+    this.lichDefeated = false;
+    this.gamePhase = 'dungeon';
+    this.recoveryTasksCompleted = 0;
+    this.recoveryTasksTotal = 0;
+    this.runAnalytics = {
+      kills: 0,
+      damageDealt: 0,
+      maxDepthReached: 0,
+      causeOfDeath: 'Unknown',
+      buildUsed: BUILD_ID,
+    };
+    this.dungeonFloorStates.clear();
+    this.monsters = [];
+
     // Generate town
     const townGen = new TownGenerator();
-    const townData = townGen.generate();
+    const townData = townGen.generate({ phase: 'dungeon' });
     this.gameMap = townData.map;
     console.log('Town generated:', this.gameMap.width, 'x', this.gameMap.height);
-    
+
     this.spawnNPCsForTown(townData.npcs);
     console.log('Spawned', this.npcs.length, 'NPCs in town');
-    
+
     // Find a safe spawn point - must be FLOOR type, not stairs, not near stairs
-    let spawnX = 10, spawnY = 10; // Default fallback
+    let spawnX = 10;
+    let spawnY = 10;
     let foundSpawn = false;
-    
-    // Search for a safe floor tile
+
     searchLoop:
     for (let y = 5; y < this.gameMap.height - 5; y++) {
       for (let x = 5; x < this.gameMap.width - 5; x++) {
         const tile = this.gameMap.getTile(x, y);
-        
-        // Must be floor
-        if (!tile || tile.type !== TileType.FLOOR) continue;
-        if (this.gameMap.isBlocked(x, y)) continue;
-        
-        // Check 3x3 area around it - no stairs allowed
+        if (!tile || tile.type !== TileType.FLOOR || this.gameMap.isBlocked(x, y)) {
+          continue;
+        }
+
         let safe = true;
         for (let dy = -2; dy <= 2; dy++) {
           for (let dx = -2; dx <= 2; dx++) {
@@ -338,9 +426,11 @@ export class GameScene extends Phaser.Scene {
               break;
             }
           }
-          if (!safe) break;
+          if (!safe) {
+            break;
+          }
         }
-        
+
         if (safe) {
           spawnX = x;
           spawnY = y;
@@ -349,28 +439,913 @@ export class GameScene extends Phaser.Scene {
         }
       }
     }
-    
+
     console.log('Spawn search result:', foundSpawn ? 'Found safe spawn' : 'Using fallback');
     console.log('Player spawn position:', spawnX, spawnY);
-    
-    // Create player
+
     this.player = new Player(spawnX, spawnY, playerClass);
     this.gameMap.addEntity(this.player);
-    
-    // Initialize message log
+
     this.messageLog = new MessageLog();
     this.messageLog.addMessage(
-      `Welcome, ${data.selectedClass?.name || 'Warrior'}! Move with arrows/WASD. Q: ranged attack, E: eat corpse, C: cook near fire, M: make fire, F: fill/drink water, V: summon wolf, L: lightning, </,: up stairs, >/.: down stairs.`
+      `Welcome, ${selectedClass?.name || 'Warrior'}! Move with arrows/WASD. Q: ranged attack, E: eat corpse, C: cook near fire, M: make fire, F: fill/drink water, V: summon wolf, L: lightning, </,: up stairs, >/.: down stairs.`
     );
-    
+    if (this.restoreFallbackNotice) {
+      this.messageLog.addMessage(this.restoreFallbackNotice, MessageType.WARNING);
+      this.restoreFallbackNotice = null;
+    }
+
     console.log('Player created:', this.player.playerClass, 'at', this.player.x, this.player.y);
+  }
+
+  private initializeFromSavedState(savedState: GameSaveState, fallbackClass: PlayerClass): void {
+    this.applySavedProgression(savedState);
+    this.dungeonFloorStates.clear();
+    this.monsters = [];
+    const floorRestoreResult = this.deserializeFloorSnapshotsForRestore(
+      savedState.floorSnapshots,
+      this.currentFloor
+    );
+    const restoredCurrentFloorState = floorRestoreResult.currentFloorState;
+    if (restoredCurrentFloorState) {
+      this.currentFloor = restoredCurrentFloorState.floor;
+      this.gameMap = restoredCurrentFloorState.map;
+      this.monsters = [...restoredCurrentFloorState.monsters];
+      this.npcs = [...restoredCurrentFloorState.npcs];
+    } else if (this.currentFloor <= 0) {
+      const townGen = new TownGenerator();
+      const townData = townGen.generate(this.getTownGenerationOptions());
+      this.gameMap = townData.map;
+      this.spawnNPCsForTown(townData.npcs);
+    } else {
+      const monsterSpawnSystem = new MonsterSpawnSystem();
+      const itemSpawnSystem = new ItemSpawnSystem();
+      const dungeonGen = new DungeonGenerator();
+      this.gameMap = dungeonGen.generate(this.currentFloor, 80, 40);
+      this.monsters = monsterSpawnSystem.spawnMonstersInDungeon(this.gameMap, this.currentFloor);
+      itemSpawnSystem.spawnItemsInDungeon(this.gameMap, this.currentFloor);
+      this.spawnNPCsForDungeon(this.currentFloor);
+    }
+
+    const spawnPosition = this.findValidRestoreSpawn(savedState.player.x, savedState.player.y);
+    const requestedX = Math.floor(savedState.player.x);
+    const requestedY = Math.floor(savedState.player.y);
+
+    this.player = new Player(spawnPosition.x, spawnPosition.y, this.normalizeSavedPlayerClass(savedState.player, fallbackClass));
+    this.applySavedPlayerState(savedState.player);
+    this.gameMap.addEntity(this.player);
+    for (const npc of this.npcs) {
+      this.refreshNpcQuestAvailability(npc);
+    }
+
+    this.messageLog = new MessageLog();
+    this.messageLog.addMessage('Save restored. Welcome back!', MessageType.INFO);
+    for (const warning of floorRestoreResult.fallbackWarnings) {
+      this.messageLog.addMessage(warning, MessageType.WARNING);
+    }
+    if (spawnPosition.x !== requestedX || spawnPosition.y !== requestedY) {
+      this.messageLog.addMessage('Saved position was invalid for this map; spawn was adjusted.', MessageType.WARNING);
+    }
+  }
+
+  private applySavedProgression(savedState: GameSaveState): void {
+    this.currentFloor = Math.max(0, Math.floor(savedState.progression.currentFloor));
+    this.gamePhase = savedState.progression.gamePhase;
+    this.lichDefeated = savedState.progression.lichDefeated;
+    this.recoveryTasksCompleted = Math.max(0, Math.floor(savedState.progression.recoveryTasksCompleted));
+    this.recoveryTasksTotal = Math.max(0, Math.floor(savedState.progression.recoveryTasksTotal));
+
+    const maxDepthReached = Math.max(0, Math.floor(savedState.progression.runAnalytics.maxDepthReached));
     this.runAnalytics = {
-      kills: 0,
-      damageDealt: 0,
-      maxDepthReached: 0,
-      causeOfDeath: 'Unknown',
-      buildUsed: BUILD_ID,
+      kills: Math.max(0, Math.floor(savedState.progression.runAnalytics.kills)),
+      damageDealt: Math.max(0, Math.floor(savedState.progression.runAnalytics.damageDealt)),
+      maxDepthReached: Math.max(maxDepthReached, this.currentFloor),
+      causeOfDeath: savedState.progression.runAnalytics.causeOfDeath || 'Unknown',
+      buildUsed: savedState.progression.runAnalytics.buildUsed || BUILD_ID,
     };
+  }
+
+  private applySavedPlayerState(savedPlayer: PlayerSaveData): void {
+    this.player.name = savedPlayer.name;
+    this.player.glyph = savedPlayer.glyph;
+    this.player.color = savedPlayer.color;
+    this.player.maxHP = Math.max(1, Math.floor(savedPlayer.maxHP));
+    this.player.currentHP = Math.max(0, Math.min(Math.floor(savedPlayer.currentHP), this.player.maxHP));
+    this.player.attack = Math.max(1, Math.floor(savedPlayer.attack));
+    this.player.defense = Math.max(0, Math.floor(savedPlayer.defense));
+    this.player.speed = Math.max(1, Math.floor(savedPlayer.speed));
+    this.player.level = Math.max(1, Math.floor(savedPlayer.level));
+    this.player.xp = Math.max(0, Math.floor(savedPlayer.xp));
+    this.player.xpForNextLevel = Math.max(1, Math.floor(savedPlayer.xpForNextLevel));
+    this.player.currentMana = Math.max(0, Math.floor(savedPlayer.currentMana));
+    this.player.maxMana = Math.max(0, Math.floor(savedPlayer.maxMana));
+    this.player.currentMana = Math.min(this.player.currentMana, this.player.maxMana);
+    this.player.magicPower = Math.max(0, Math.floor(savedPlayer.magicPower));
+    this.player.lockpicking = Math.max(0, Math.min(100, Math.floor(savedPlayer.lockpicking)));
+    this.player.gold = savedPlayer.gold;
+    this.player.inventory = savedPlayer.inventory.map((item) => this.cloneInventoryItem(item));
+    this.player.equipment = this.cloneEquipment(savedPlayer.equipment);
+    this.player.questFlags = new Map(savedPlayer.questFlags.entries());
+    this.player.quests = savedPlayer.quests.map((quest) => this.cloneQuestObjective(quest));
+    this.player.restoreStatusEffects(savedPlayer.statusEffects);
+    this.player.restoreUnlockedTalentIds(savedPlayer.unlockedTalentIds);
+
+    if (savedPlayer.inventoryCapacity !== this.player.inventoryCapacity) {
+      console.warn(
+        `Saved inventory capacity (${savedPlayer.inventoryCapacity}) does not match runtime value (${this.player.inventoryCapacity}).`
+      );
+    }
+  }
+
+  private findValidRestoreSpawn(savedX: number, savedY: number): { x: number; y: number } {
+    const targetX = Math.floor(savedX);
+    const targetY = Math.floor(savedY);
+    if (this.isValidSpawnTile(targetX, targetY)) {
+      return { x: targetX, y: targetY };
+    }
+
+    const fallback = this.findNearestValidSpawnTile(targetX, targetY, 12);
+    if (fallback) {
+      return fallback;
+    }
+
+    return this.currentFloor <= 0 ? { x: 19, y: 36 } : { x: 40, y: 20 };
+  }
+
+  private isValidSpawnTile(x: number, y: number): boolean {
+    if (!this.gameMap.isInBounds(x, y)) {
+      return false;
+    }
+    const tile = this.gameMap.getTile(x, y);
+    if (!tile || tile.blocked) {
+      return false;
+    }
+    return this.gameMap.getEntityAt(x, y) === null;
+  }
+
+  private findNearestValidSpawnTile(startX: number, startY: number, maxRadius: number): { x: number; y: number } | null {
+    if (this.isValidSpawnTile(startX, startY)) {
+      return { x: startX, y: startY };
+    }
+
+    for (let radius = 1; radius <= maxRadius; radius++) {
+      for (let dy = -radius; dy <= radius; dy++) {
+        for (let dx = -radius; dx <= radius; dx++) {
+          if (Math.abs(dx) !== radius && Math.abs(dy) !== radius) {
+            continue;
+          }
+          const x = startX + dx;
+          const y = startY + dy;
+          if (this.isValidSpawnTile(x, y)) {
+            return { x, y };
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  private cloneInventoryItem(item: InventoryItem): InventoryItem {
+    return { ...item };
+  }
+
+  private cloneEquipment(equipment: Equipment): Equipment {
+    return {
+      weapon: equipment.weapon ? this.cloneInventoryItem(equipment.weapon) : undefined,
+      armor: equipment.armor ? this.cloneInventoryItem(equipment.armor) : undefined,
+      shield: equipment.shield ? this.cloneInventoryItem(equipment.shield) : undefined,
+      accessory: equipment.accessory ? this.cloneInventoryItem(equipment.accessory) : undefined,
+    };
+  }
+
+  private cloneQuestObjective(quest: QuestObjective): QuestObjective {
+    return { ...quest };
+  }
+
+  private buildSaveState(options: { snapshotMode?: 'full' | 'current-floor-only' | 'none' } = {}): GameSaveState {
+    this.captureActiveFloorStateForSave();
+    const snapshotMode = options.snapshotMode ?? 'full';
+
+    return {
+      player: {
+        x: this.player.x,
+        y: this.player.y,
+        name: this.player.name,
+        glyph: this.player.glyph,
+        color: this.player.color,
+        maxHP: this.player.maxHP,
+        currentHP: this.player.currentHP,
+        attack: this.player.attack,
+        defense: this.player.defense,
+        speed: this.player.speed,
+        playerClass: this.player.playerClass,
+        level: this.player.level,
+        xp: this.player.xp,
+        xpForNextLevel: this.player.xpForNextLevel,
+        currentMana: this.player.currentMana,
+        maxMana: this.player.maxMana,
+        magicPower: this.player.magicPower,
+        lockpicking: this.player.lockpicking,
+        inventoryCapacity: this.player.inventoryCapacity,
+        gold: this.player.gold,
+        statusEffects: this.player.getStatusEffects().map((effect) => ({ ...effect })),
+        unlockedTalentIds: new Set(this.player.getUnlockedTalentIds()),
+        inventory: this.player.inventory.map((item) => this.cloneInventoryItem(item)),
+        equipment: this.cloneEquipment(this.player.equipment),
+        questFlags: new Map(this.player.questFlags.entries()),
+        quests: this.player.quests.map((quest) => this.cloneQuestObjective(quest)),
+      },
+      progression: {
+        currentFloor: this.currentFloor,
+        gamePhase: this.gamePhase,
+        lichDefeated: this.lichDefeated,
+        recoveryTasksCompleted: this.recoveryTasksCompleted,
+        recoveryTasksTotal: this.recoveryTasksTotal,
+        runAnalytics: {
+          kills: this.runAnalytics.kills,
+          damageDealt: this.runAnalytics.damageDealt,
+          maxDepthReached: this.runAnalytics.maxDepthReached,
+          causeOfDeath: this.runAnalytics.causeOfDeath,
+          buildUsed: this.runAnalytics.buildUsed,
+        },
+      },
+      floorSnapshots: this.serializeFloorSnapshotsForSave(snapshotMode),
+    };
+  }
+
+  private captureActiveFloorStateForSave(): void {
+    if (this.currentFloor <= 0 || this.dungeonGenerationMode !== 'persistent' || !this.gameMap) {
+      return;
+    }
+
+    this.monsters = this.monsters.filter((monster) => !monster.isDead());
+    this.dungeonFloorStates.set(this.currentFloor, {
+      map: this.gameMap,
+      monsters: [...this.monsters],
+      npcs: [...this.npcs],
+    });
+  }
+
+  private serializeFloorSnapshotsForSave(
+    snapshotMode: 'full' | 'current-floor-only' | 'none' = 'full'
+  ): FloorSnapshotsSaveData | undefined {
+    if (snapshotMode === 'none') {
+      return undefined;
+    }
+
+    const dungeonFloorSnapshots: DungeonFloorSnapshotSaveDataV1[] = [];
+    let currentFloorSnapshot: DungeonFloorSnapshotSaveDataV1 | undefined;
+    const sortedFloorEntries = Array.from(this.dungeonFloorStates.entries()).sort(([a], [b]) => a - b);
+    for (const [floor, floorState] of sortedFloorEntries) {
+      if (!floorState || !floorState.map) {
+        console.warn(`Skipping invalid cached floor state for floor ${floor} during save serialization.`);
+        this.dungeonFloorStates.delete(floor);
+        continue;
+      }
+      const snapshot = this.serializeDungeonFloorState(floor, floorState);
+      if (snapshot) {
+        dungeonFloorSnapshots.push(snapshot);
+        if (floor === this.currentFloor) {
+          currentFloorSnapshot = snapshot;
+        }
+      }
+    }
+
+    if (!currentFloorSnapshot && dungeonFloorSnapshots.length === 0) {
+      return undefined;
+    }
+
+    if (snapshotMode === 'current-floor-only') {
+      return currentFloorSnapshot
+        ? {
+            currentFloorSnapshot,
+            dungeonFloorSnapshots: [currentFloorSnapshot],
+          }
+        : undefined;
+    }
+
+    return {
+      currentFloorSnapshot: currentFloorSnapshot ?? undefined,
+      dungeonFloorSnapshots: dungeonFloorSnapshots.length > 0 ? dungeonFloorSnapshots : undefined,
+    };
+  }
+
+  private serializeDungeonFloorState(
+    floor: number,
+    state: DungeonFloorState | undefined
+  ): DungeonFloorSnapshotSaveDataV1 | null {
+    if (!Number.isFinite(floor) || floor < 0) {
+      return null;
+    }
+
+    if (!state || !state.map || floor <= 0) {
+      return null;
+    }
+
+    const monsters = Array.isArray(state.monsters) ? state.monsters : [];
+    const livingMonsters = monsters.filter((monster) => monster && !monster.isDead());
+    const items = Array.isArray(state.map.items) ? state.map.items : [];
+    const traps = Array.isArray(state.map.traps) ? state.map.traps : [];
+    const npcs = Array.isArray(state.npcs) ? state.npcs : [];
+
+    return {
+      version: FLOOR_SNAPSHOT_DTO_VERSION,
+      floor,
+      map: this.serializeMapSnapshot(state.map),
+      monsters: livingMonsters.map((monster) => this.serializeMonsterSnapshot(monster)),
+      items: items.map((item) => this.serializeItemSnapshot(item)),
+      traps: traps.map((trap) => this.serializeTrapSnapshot(trap)),
+      npcs: npcs.map((npc) => this.serializeNPCSnapshot(npc)),
+    };
+  }
+
+  private serializeMapSnapshot(map: GameMap): FloorMapSnapshotSaveData {
+    return {
+      width: map.width,
+      height: map.height,
+      tiles: map.tiles.map((row) =>
+        row.map((tile) => ({
+          type: tile.type,
+          blocked: tile.blocked,
+          blocksSight: tile.blocksSight,
+          explored: tile.explored,
+          visible: tile.visible,
+        }))
+      ),
+    };
+  }
+
+  private serializeMonsterSnapshot(monster: Monster): FloorMonsterSnapshotSaveData {
+    return {
+      id: this.buildMonsterSnapshotId(monster),
+      templateId: monster.templateId,
+      name: monster.name,
+      behavior: monster.behavior,
+      x: monster.x,
+      y: monster.y,
+      currentHP: monster.currentHP,
+      maxHP: monster.maxHP,
+      status: {
+        isAggro: monster.isAggro,
+        triggeredPhaseThresholds: Array.from(monster.triggeredPhaseThresholds).sort((a, b) => a - b),
+        lastHeardNoisePos: monster.lastHeardNoisePos ? { ...monster.lastHeardNoisePos } : null,
+        noiseInvestigationTurnsRemaining: monster.noiseInvestigationTurnsRemaining,
+        hearingThreshold: monster.hearingThreshold,
+        isFriendlySummon: monster.isFriendlySummon,
+        summonOwner: monster.summonOwner,
+        persistAcrossFloors: monster.persistAcrossFloors,
+        companionId: monster.companionId,
+      },
+    };
+  }
+
+  private serializeItemSnapshot(item: GroundItem): FloorItemSnapshotSaveData {
+    return {
+      id: item.id,
+      name: item.name,
+      x: item.x,
+      y: item.y,
+      glyph: item.glyph,
+      color: item.color,
+      quantity: item.quantity,
+      inventoryType: item.inventoryType,
+      rarity: item.rarity,
+      identified: item.identified,
+      enchantmentBonus: item.enchantmentBonus,
+      currentDurability: item.currentDurability,
+      maxDurability: item.maxDurability,
+      corpseSourceId: item.corpseSourceId,
+      corpseCursed: item.corpseCursed,
+      corpseEdible: item.corpseEdible,
+      corpseCooked: item.corpseCooked,
+      corpseSeasoned: item.corpseSeasoned,
+      affixAttackBonus: item.affixAttackBonus,
+      affixCritChanceBonus: item.affixCritChanceBonus,
+      affixMagicResistBonus: item.affixMagicResistBonus,
+      isGold: item.isGold,
+      goldAmount: item.goldAmount,
+    };
+  }
+
+  private serializeTrapSnapshot(trap: Trap): FloorTrapSnapshotSaveData {
+    return {
+      id: trap.id,
+      type: trap.type,
+      x: trap.x,
+      y: trap.y,
+      damage: trap.damage,
+      revealed: trap.revealed,
+      disarmed: trap.disarmed,
+    };
+  }
+
+  private serializeNPCSnapshot(npc: NPC): FloorNPCSnapshotSaveData {
+    return {
+      id: this.buildNPCSnapshotId(npc),
+      definitionId: npc.definitionId,
+      npcType: npc.npcType,
+      name: npc.name,
+      glyph: npc.glyph,
+      color: npc.color,
+      x: npc.x,
+      y: npc.y,
+      dialogueStartId: npc.dialogueStartId,
+      currentDialogueId: npc.currentDialogueId,
+      isInteractable: npc.isInteractable,
+      interactionRange: npc.interactionRange,
+      questIds: [...npc.questIds],
+      shopInventoryIds: [...npc.shopInventoryIds],
+    };
+  }
+
+  private deserializeFloorSnapshotsForRestore(
+    floorSnapshots: FloorSnapshotsSaveData | undefined,
+    targetFloor: number
+  ): FloorRestoreResult {
+    const fallbackWarnings: string[] = [];
+    if (!floorSnapshots) {
+      return {
+        currentFloorState: null,
+        fallbackWarnings,
+      };
+    }
+
+    const restoredFloors = new Map<number, RestoredDungeonFloorState>();
+    const restoreSnapshotIntoMap = (
+      snapshot: DungeonFloorSnapshotSaveDataV1,
+      sourceLabel: string
+    ): void => {
+      const floor = Math.floor(snapshot.floor);
+      if (floor <= 0) {
+        return;
+      }
+
+      const restored = this.deserializeDungeonFloorSnapshot(snapshot);
+      if (restored) {
+        restoredFloors.set(restored.floor, restored);
+        return;
+      }
+
+      if (restoredFloors.has(floor)) {
+        console.warn(
+          `Skipping corrupted ${sourceLabel} snapshot for floor ${floor}; a valid snapshot for this floor is already available.`
+        );
+        return;
+      }
+
+      const fallbackState = this.generateDeterministicFloorFallback(floor);
+      restoredFloors.set(fallbackState.floor, fallbackState);
+      const warning = `Dungeon floor ${floor} snapshot was corrupted and has been regenerated.`;
+      fallbackWarnings.push(warning);
+      console.warn(`Failed to decode ${sourceLabel} snapshot for floor ${floor}. Using deterministic fallback generation.`);
+    };
+
+    const dungeonSnapshots = floorSnapshots.dungeonFloorSnapshots ?? [];
+    for (const snapshot of dungeonSnapshots) {
+      if (!snapshot || !Number.isFinite(snapshot.floor)) {
+        continue;
+      }
+      restoreSnapshotIntoMap(snapshot, 'cached dungeon');
+    }
+
+    const currentSnapshot = floorSnapshots.currentFloorSnapshot;
+    if (currentSnapshot) {
+      if (Number.isFinite(currentSnapshot.floor)) {
+        const currentFloor = Math.floor(currentSnapshot.floor);
+        const restoredCurrentSnapshot = this.deserializeDungeonFloorSnapshot(currentSnapshot);
+        if (restoredCurrentSnapshot) {
+          restoredFloors.set(restoredCurrentSnapshot.floor, restoredCurrentSnapshot);
+        } else if (!restoredFloors.has(currentFloor) && currentFloor > 0) {
+          const fallbackState = this.generateDeterministicFloorFallback(currentFloor);
+          restoredFloors.set(fallbackState.floor, fallbackState);
+          const warning = `Current dungeon floor ${currentFloor} snapshot was corrupted and has been regenerated.`;
+          fallbackWarnings.push(warning);
+          console.warn(
+            `Failed to decode current floor snapshot for floor ${currentFloor}. Using deterministic fallback generation.`
+          );
+        } else if (restoredFloors.has(currentFloor)) {
+          console.warn(
+            `Current floor snapshot for floor ${currentFloor} was corrupted; reusing a valid snapshot for this floor.`
+          );
+        }
+      }
+    }
+
+    const normalizedTargetFloor = Math.max(1, Math.floor(targetFloor));
+    for (const [floor, restored] of restoredFloors) {
+      if (floor === normalizedTargetFloor) {
+        continue;
+      }
+      this.dungeonFloorStates.set(floor, {
+        map: restored.map,
+        monsters: [...restored.monsters],
+        npcs: [...restored.npcs],
+      });
+    }
+
+    if (targetFloor <= 0) {
+      return {
+        currentFloorState: null,
+        fallbackWarnings,
+      };
+    }
+
+    const restoredCurrent = restoredFloors.get(normalizedTargetFloor);
+    if (!restoredCurrent) {
+      return {
+        currentFloorState: null,
+        fallbackWarnings,
+      };
+    }
+
+    this.dungeonFloorStates.delete(restoredCurrent.floor);
+    return {
+      currentFloorState: restoredCurrent,
+      fallbackWarnings,
+    };
+  }
+
+  private deserializeDungeonFloorSnapshot(
+    snapshot: DungeonFloorSnapshotSaveDataV1
+  ): RestoredDungeonFloorState | null {
+    if (!snapshot || snapshot.version !== FLOOR_SNAPSHOT_DTO_VERSION || snapshot.floor <= 0) {
+      return null;
+    }
+
+    try {
+      const floor = Math.floor(snapshot.floor);
+      const map = this.deserializeMapSnapshot(snapshot.map);
+      const monsterSnapshots = Array.isArray(snapshot.monsters) ? snapshot.monsters : [];
+      const npcSnapshots = Array.isArray(snapshot.npcs) ? snapshot.npcs : [];
+      const itemSnapshots = Array.isArray(snapshot.items) ? snapshot.items : [];
+      const trapSnapshots = Array.isArray(snapshot.traps) ? snapshot.traps : [];
+
+      const monsters = monsterSnapshots
+        .map((monsterSnapshot) => this.deserializeMonsterSnapshot(monsterSnapshot))
+        .filter((monster): monster is Monster => monster !== null);
+      const npcs = npcSnapshots
+        .map((npcSnapshot) => this.deserializeNPCSnapshot(npcSnapshot))
+        .filter((npc): npc is NPC => npc !== null);
+
+      map.items = itemSnapshots.map((itemSnapshot) => this.deserializeItemSnapshot(itemSnapshot));
+      map.traps = trapSnapshots.map((trapSnapshot) => this.deserializeTrapSnapshot(trapSnapshot));
+
+      for (const monster of monsters) {
+        if (!monster.isDead()) {
+          map.addEntity(monster);
+        }
+      }
+
+      for (const npc of npcs) {
+        map.addEntity(npc);
+      }
+
+      return {
+        floor,
+        map,
+        monsters,
+        npcs,
+      };
+    } catch (error) {
+      console.warn('Failed to deserialize dungeon floor snapshot.', error);
+      return null;
+    }
+  }
+
+  private generateDeterministicFloorFallback(floor: number): RestoredDungeonFloorState {
+    const deterministicSeed = this.getDeterministicFloorSeed(floor);
+    const map = new DungeonGenerator(deterministicSeed).generate(floor, 80, 40);
+    const monsters = new MonsterSpawnSystem(deterministicSeed).spawnMonstersInDungeon(map, floor);
+    new ItemSpawnSystem(deterministicSeed).spawnItemsInDungeon(map, floor);
+    const npcs = this.spawnNPCsForDungeonFromMap(map, floor, deterministicSeed);
+
+    return {
+      floor,
+      map,
+      monsters,
+      npcs,
+    };
+  }
+
+  private getDeterministicFloorSeed(floor: number): number {
+    const normalizedFloor = Math.max(1, Math.floor(floor));
+    return (normalizedFloor * 2654435761) >>> 0;
+  }
+
+  private spawnNPCsForDungeonFromMap(
+    map: GameMap,
+    floor: number,
+    seedOverride?: number
+  ): NPC[] {
+    const npcs: NPC[] = [];
+    const dungeonNPCs = getNPCDefinitionsForContext('dungeon', floor);
+    if (dungeonNPCs.length === 0) {
+      return npcs;
+    }
+
+    const randomIndex = this.createDeterministicIndexPicker(seedOverride);
+    const validTiles: Array<{ x: number; y: number }> = [];
+    for (let y = 1; y < map.height - 1; y++) {
+      for (let x = 1; x < map.width - 1; x++) {
+        const tile = map.getTile(x, y);
+        if (tile && tile.type === TileType.FLOOR && this.isNPCSpawnTileValidOnMap(map, x, y)) {
+          validTiles.push({ x, y });
+        }
+      }
+    }
+
+    for (const npcDef of dungeonNPCs) {
+      if (validTiles.length === 0) {
+        console.warn(`No valid dungeon spawn tile left for NPC ${npcDef.id}`);
+        break;
+      }
+
+      const idx = randomIndex(validTiles.length);
+      const location = validTiles[idx];
+      validTiles.splice(idx, 1);
+
+      const npc = this.createNPCFromDefinition(npcDef, location.x, location.y);
+      npcs.push(npc);
+      map.addEntity(npc);
+    }
+
+    return npcs;
+  }
+
+  private createDeterministicIndexPicker(seedOverride?: number): (length: number) => number {
+    if (seedOverride === undefined) {
+      return (length: number): number => Math.floor(Math.random() * length);
+    }
+
+    let state = seedOverride >>> 0;
+    return (length: number): number => {
+      if (length <= 1) {
+        return 0;
+      }
+      state = (state * 1664525 + 1013904223) >>> 0;
+      return Math.floor((state / 4294967296) * length);
+    };
+  }
+
+  private deserializeMapSnapshot(snapshot: FloorMapSnapshotSaveData): GameMap {
+    const width = Math.max(1, Math.floor(snapshot.width));
+    const height = Math.max(1, Math.floor(snapshot.height));
+    const map = new GameMap(width, height);
+
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const tileSnapshot = snapshot.tiles[y]?.[x];
+        if (!tileSnapshot) {
+          continue;
+        }
+
+        const tileType = this.parseTileType(tileSnapshot.type);
+        map.setTile(x, y, tileType, tileSnapshot.blocked, tileSnapshot.blocksSight);
+        const tile = map.getTile(x, y);
+        if (tile) {
+          tile.explored = tileSnapshot.explored ?? false;
+          tile.visible = tileSnapshot.visible ?? false;
+        }
+      }
+    }
+
+    return map;
+  }
+
+  private deserializeMonsterSnapshot(snapshot: FloorMonsterSnapshotSaveData): Monster | null {
+    const template = getMonsterTemplate(snapshot.templateId);
+    if (!template) {
+      return null;
+    }
+
+    const behavior = this.parseAIBehavior(snapshot.behavior);
+    const monster = new Monster(
+      Math.floor(snapshot.x),
+      Math.floor(snapshot.y),
+      snapshot.name || template.name,
+      template.glyph,
+      template.color,
+      Math.max(1, Math.floor(snapshot.maxHP)),
+      template.baseStats.attack,
+      template.baseStats.defense,
+      template.baseStats.speed,
+      behavior,
+      template.baseStats.experience
+    );
+    monster.templateId = template.id;
+    monster.aiRules = template.aiRules;
+    monster.sightRange = template.sightRange;
+    const status = snapshot.status;
+    monster.maxHP = Math.max(1, Math.floor(snapshot.maxHP));
+    monster.currentHP = Math.max(0, Math.min(Math.floor(snapshot.currentHP), monster.maxHP));
+    monster.isAggro = status?.isAggro ?? false;
+    monster.triggeredPhaseThresholds = new Set(
+      (status?.triggeredPhaseThresholds ?? []).map((entry) => Math.floor(entry))
+    );
+    monster.lastHeardNoisePos = status?.lastHeardNoisePos
+      ? {
+          x: Math.floor(status.lastHeardNoisePos.x),
+          y: Math.floor(status.lastHeardNoisePos.y),
+        }
+      : null;
+    monster.noiseInvestigationTurnsRemaining = Math.max(
+      0,
+      Math.floor(status?.noiseInvestigationTurnsRemaining ?? 0)
+    );
+    monster.hearingThreshold = Math.max(0, Math.floor(status?.hearingThreshold ?? 0));
+    monster.isFriendlySummon = status?.isFriendlySummon ?? false;
+    monster.summonOwner = status?.summonOwner ?? null;
+    monster.persistAcrossFloors = status?.persistAcrossFloors ?? false;
+    monster.companionId = status?.companionId;
+
+    return monster;
+  }
+
+  private deserializeItemSnapshot(snapshot: FloorItemSnapshotSaveData): GroundItem {
+    return {
+      id: snapshot.id,
+      name: snapshot.name,
+      x: Math.floor(snapshot.x),
+      y: Math.floor(snapshot.y),
+      glyph: snapshot.glyph,
+      color: snapshot.color,
+      quantity: snapshot.quantity,
+      inventoryType: snapshot.inventoryType,
+      rarity: snapshot.rarity,
+      identified: snapshot.identified,
+      enchantmentBonus: snapshot.enchantmentBonus,
+      currentDurability: snapshot.currentDurability,
+      maxDurability: snapshot.maxDurability,
+      corpseSourceId: snapshot.corpseSourceId,
+      corpseCursed: snapshot.corpseCursed,
+      corpseEdible: snapshot.corpseEdible,
+      corpseCooked: snapshot.corpseCooked,
+      corpseSeasoned: snapshot.corpseSeasoned,
+      affixAttackBonus: snapshot.affixAttackBonus,
+      affixCritChanceBonus: snapshot.affixCritChanceBonus,
+      affixMagicResistBonus: snapshot.affixMagicResistBonus,
+      isGold: snapshot.isGold,
+      goldAmount: snapshot.goldAmount,
+    };
+  }
+
+  private deserializeTrapSnapshot(snapshot: FloorTrapSnapshotSaveData): Trap {
+    return {
+      id: snapshot.id,
+      type: snapshot.type,
+      x: Math.floor(snapshot.x),
+      y: Math.floor(snapshot.y),
+      damage: Math.max(0, Math.floor(snapshot.damage)),
+      revealed: snapshot.revealed,
+      disarmed: snapshot.disarmed,
+    };
+  }
+
+  private deserializeNPCSnapshot(snapshot: FloorNPCSnapshotSaveData): NPC | null {
+    const npcType = this.parseEntityNPCType(snapshot.npcType);
+    const npc = new NPC(
+      Math.floor(snapshot.x),
+      Math.floor(snapshot.y),
+      snapshot.name,
+      snapshot.glyph,
+      snapshot.color,
+      npcType,
+      snapshot.dialogueStartId || 'start'
+    );
+    npc.definitionId = snapshot.definitionId;
+    npc.currentDialogueId = snapshot.currentDialogueId;
+    npc.isInteractable = snapshot.isInteractable;
+    npc.interactionRange = Math.max(1, Math.floor(snapshot.interactionRange));
+    npc.questIds = Array.isArray(snapshot.questIds) ? snapshot.questIds.map((questId) => String(questId)) : [];
+    npc.shopInventoryIds = Array.isArray(snapshot.shopInventoryIds)
+      ? snapshot.shopInventoryIds.map((itemId) => String(itemId))
+      : [];
+
+    if (npc.definitionId) {
+      const npcDefinition = NPCS.find((entry) => entry.id === npc.definitionId);
+      if (npcDefinition) {
+        this.populateNPCDialogues(npc, npcDefinition);
+      }
+    }
+
+    return npc;
+  }
+
+  private buildMonsterSnapshotId(monster: Monster): string {
+    const companionSuffix = monster.companionId ? `:${monster.companionId}` : '';
+    return `${monster.templateId}:${monster.x}:${monster.y}:${monster.maxHP}:${monster.currentHP}${companionSuffix}`;
+  }
+
+  private buildNPCSnapshotId(npc: NPC): string {
+    const definition = npc.definitionId ?? npc.npcType;
+    return `${definition}:${npc.x}:${npc.y}:${npc.name}`;
+  }
+
+  private parseTileType(rawTileType: string): TileType {
+    const tileValues = Object.values(TileType) as string[];
+    if (tileValues.includes(rawTileType)) {
+      return rawTileType as TileType;
+    }
+    return TileType.FLOOR;
+  }
+
+  private parseAIBehavior(rawBehavior: string): AIBehavior {
+    switch (rawBehavior) {
+      case AIBehavior.AGGRESSIVE:
+      case AIBehavior.AMBUSHER:
+      case AIBehavior.COWARDLY:
+      case AIBehavior.STATIONARY:
+      case AIBehavior.WANDERER:
+        return rawBehavior;
+      default:
+        return AIBehavior.WANDERER;
+    }
+  }
+
+  private parseEntityNPCType(rawType: string): EntityNPCType {
+    switch (rawType) {
+      case EntityNPCType.MERCHANT:
+        return EntityNPCType.MERCHANT;
+      case EntityNPCType.QUESTGIVER:
+        return EntityNPCType.QUESTGIVER;
+      case EntityNPCType.HEALER:
+        return EntityNPCType.HEALER;
+      case EntityNPCType.SAGE:
+        return EntityNPCType.SAGE;
+      case EntityNPCType.GUARD:
+        return EntityNPCType.GUARD;
+      default:
+        return EntityNPCType.GENERIC;
+    }
+  }
+
+  private saveGameState(
+    reason: string,
+    options: { force?: boolean; snapshotMode?: 'full' | 'current-floor-only' | 'none' } = {}
+  ): boolean {
+    if (!this.player || !this.gameMap || this.player.isDead()) {
+      return false;
+    }
+
+    const now = Date.now();
+    if (!options.force && now - this.lastSaveTimestampMs < MIN_SAVE_INTERVAL_MS) {
+      return false;
+    }
+
+    // Keep pagehide/visibility saves lightweight to avoid localStorage quota overruns.
+    const snapshotMode = options.snapshotMode
+      ?? (reason === 'pagehide' || reason === 'document_hidden' ? 'current-floor-only' : 'full');
+    const saved = this.gameSaveManager.save(this.buildSaveState({ snapshotMode }));
+    if (saved) {
+      this.lastSaveTimestampMs = now;
+      return true;
+    }
+
+    console.warn('Failed to save game state.');
+    return false;
+  }
+
+  private startAutosaveTimer(): void {
+    if (this.autosaveIntervalId !== null) {
+      return;
+    }
+
+    this.autosaveIntervalId = window.setInterval(() => {
+      this.tryAutosaveTick();
+    }, AUTOSAVE_INTERVAL_MS);
+  }
+
+  private stopAutosaveTimer(): void {
+    if (this.autosaveIntervalId === null) {
+      return;
+    }
+
+    window.clearInterval(this.autosaveIntervalId);
+    this.autosaveIntervalId = null;
+  }
+
+  private tryAutosaveTick(): void {
+    if (!this.scene.isActive('GameScene') || this.isOverlaySceneActive() || this.player.isDead()) {
+      return;
+    }
+
+    this.saveGameState('autosave_tick');
+  }
+
+  private normalizeSavedPlayerClass(savedPlayer: PlayerSaveData, fallbackClass: PlayerClass): PlayerClass {
+    const playerClass = savedPlayer.playerClass;
+    if (playerClass === 'warrior' || playerClass === 'mage' || playerClass === 'rogue') {
+      return playerClass;
+    }
+    return fallbackClass;
+  }
+
+  private getPlayerClassFromSelection(selectedClass: CharacterClass | undefined): PlayerClass {
+    const normalizedClass = selectedClass?.name.toLowerCase();
+    if (normalizedClass === 'mage' || normalizedClass === 'rogue' || normalizedClass === 'warrior') {
+      return normalizedClass;
+    }
+    return 'warrior';
   }
 
   create(): void {
@@ -393,6 +1368,8 @@ export class GameScene extends Phaser.Scene {
 
     // Use a global keydown listener so input can wake the game loop from idle sleep
     window.addEventListener('keydown', this.onWindowKeyDown, { passive: false });
+    window.addEventListener('pagehide', this.onWindowPageHide);
+    document.addEventListener('visibilitychange', this.onDocumentVisibilityChange);
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       this.events.off('dialogue-action', this.handleDialogueAction, this);
       this.cleanupInputAndSleep();
@@ -402,6 +1379,7 @@ export class GameScene extends Phaser.Scene {
       this.cleanupInputAndSleep();
     });
     this.events.on('dialogue-action', this.handleDialogueAction, this);
+    this.startAutosaveTimer();
     console.log('Global keyboard input registered');
 
     // Setup visibility based on floor
@@ -441,13 +1419,17 @@ export class GameScene extends Phaser.Scene {
 
     // Initial render
     this.render();
+    this.saveGameState('session_start', { force: true });
     this.scheduleIdleSleep();
     console.log('=== GAME READY ===');
   }
 
   private cleanupInputAndSleep(): void {
     window.removeEventListener('keydown', this.onWindowKeyDown);
+    window.removeEventListener('pagehide', this.onWindowPageHide);
+    document.removeEventListener('visibilitychange', this.onDocumentVisibilityChange);
     this.clearIdleSleepTimer();
+    this.stopAutosaveTimer();
     this.wakeGameLoop();
     if (this.pickupOverlay) {
       this.pickupOverlay.destroy();
@@ -489,7 +1471,7 @@ export class GameScene extends Phaser.Scene {
       return;
     }
 
-    const key = event.key.toLowerCase();
+    const key = this.normalizeInputKey(event);
     const isHandledKey = (
       key === 'arrowup' ||
       key === 'arrowdown' ||
@@ -502,6 +1484,8 @@ export class GameScene extends Phaser.Scene {
       key === 't' ||
       key === 'g' ||
       key === 'i' ||
+      key === 'h' ||
+      key === 'j' ||
       key === 'b' ||
       key === 'f' ||
       key === 'x' ||
@@ -509,13 +1493,13 @@ export class GameScene extends Phaser.Scene {
       key === 'c' ||
       key === 'm' ||
       key === 'e' ||
+      key === '<' ||
+      key === ',' ||
+      key === '>' ||
+      key === '.' ||
       key === COMPANION_SPELL_KEY ||
       key === LIGHTNING_SPELL_KEY ||
-      key === PLAYER_RANGED_ATTACK_KEY ||
-      key === ',' ||
-      key === '.' ||
-      key === '<' ||
-      key === '>'
+      key === PLAYER_RANGED_ATTACK_KEY
     );
 
     if (!isHandledKey) {
@@ -524,7 +1508,31 @@ export class GameScene extends Phaser.Scene {
 
     event.preventDefault();
     this.wakeGameLoop();
-    this.handleKeyPress(event.key);
+    this.handleKeyPress(key);
+  };
+
+  private normalizeInputKey(event: KeyboardEvent): string {
+    // Keep movement/action keys layout-aware via `event.key`, but normalize stair keys
+    // to physical comma/period keys so `<`/`>` work reliably across keyboard layouts.
+    if (event.code === 'Comma') {
+      return event.shiftKey ? '<' : ',';
+    }
+    if (event.code === 'Period') {
+      return event.shiftKey ? '>' : '.';
+    }
+    return event.key.toLowerCase();
+  }
+
+  private onWindowPageHide = (): void => {
+    this.saveGameState('pagehide', { force: true });
+  };
+
+  private onDocumentVisibilityChange = (): void => {
+    if (!document.hidden) {
+      return;
+    }
+
+    this.saveGameState('document_hidden', { force: true });
   };
 
   private isOverlaySceneActive(): boolean {
@@ -532,12 +1540,15 @@ export class GameScene extends Phaser.Scene {
       this.scene.isActive('DialogueScene') ||
       this.scene.isActive('ShopScene') ||
       this.scene.isActive('InventoryScene') ||
+      this.scene.isActive('HelpScene') ||
+      this.scene.isActive('QuestLogScene') ||
       this.scene.isActive('MainMenuScene') ||
       this.scene.isActive('GameOverScene')
     );
   }
 
   private clearIdleSleepTimer(): void {
+    this.idleSleepTimerGeneration++;
     if (this.idleSleepTimer !== null) {
       window.clearTimeout(this.idleSleepTimer);
       this.idleSleepTimer = null;
@@ -545,12 +1556,16 @@ export class GameScene extends Phaser.Scene {
   }
 
   private scheduleIdleSleep(): void {
-    if (!this.scene.isActive('GameScene') || this.isOverlaySceneActive()) {
+    if (!this.scene.isActive('GameScene') || this.isOverlaySceneActive() || this.isFloorTransitioning) {
       return;
     }
 
     this.clearIdleSleepTimer();
+    const timerGeneration = this.idleSleepTimerGeneration;
     this.idleSleepTimer = window.setTimeout(() => {
+      if (timerGeneration !== this.idleSleepTimerGeneration) {
+        return;
+      }
       this.enterIdleSleep();
     }, this.idleSleepDelayMs);
   }
@@ -562,7 +1577,7 @@ export class GameScene extends Phaser.Scene {
       return;
     }
 
-    if (!this.scene.isActive('GameScene') || this.isOverlaySceneActive()) {
+    if (!this.scene.isActive('GameScene') || this.isOverlaySceneActive() || this.isFloorTransitioning) {
       return;
     }
 
@@ -579,6 +1594,16 @@ export class GameScene extends Phaser.Scene {
 
     this.isLoopSleeping = false;
     this.game.loop.wake();
+  }
+
+  private beginFloorTransition(): void {
+    this.isFloorTransitioning = true;
+    this.wakeGameLoop();
+  }
+
+  private endFloorTransition(): void {
+    this.isFloorTransitioning = false;
+    this.scheduleIdleSleep();
   }
 
   private handleKeyPress(key: string): void {
@@ -610,6 +1635,12 @@ export class GameScene extends Phaser.Scene {
         return;
       case 'i':
         this.openInventory();
+        return;
+      case 'h':
+        this.openHelpOverlay();
+        return;
+      case 'j':
+        this.openQuestLogOverlay();
         return;
       case 'b':
         this.tryBreakStickFromNearbyTree();
@@ -691,9 +1722,9 @@ export class GameScene extends Phaser.Scene {
         this.emitPlayerNoise(newX, newY, NOISE_BUDGET.PLAYER_MELEE, 'player_melee');
         
         // Handle monster death
-          if (result.killed && monster.isDead()) {
-            console.log('Monster killed:', monster.name);
-            this.handleHostileMonsterDeath(monster, true);
+        if (result.killed && monster.isDead()) {
+          console.log('Monster killed:', monster.name);
+          this.handleHostileMonsterDeath(monster, true, true);
         }
         
         // Monster attacked, so process monster turns
@@ -913,6 +1944,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private tryUseStairs(direction: 'up' | 'down'): void {
+    this.wakeGameLoop();
     let tile = this.gameMap.getTile(this.player.x, this.player.y);
     if (!tile) return;
 
@@ -1745,23 +2777,39 @@ export class GameScene extends Phaser.Scene {
       return;
     }
 
+    if (payload.action === 'recovery_task_hook') {
+      this.handleRecoveryTaskHook(payload.npcId, payload.npcName);
+      return;
+    }
+
+    if (payload.action === 'recovery_milestone_response') {
+      this.handleRecoveryMilestoneResponse(payload.npcName);
+      return;
+    }
+
+    if (payload.action === 'recovery_phase_reflection') {
+      this.handleRecoveryPhaseReflection(payload.npcId, payload.npcName);
+      return;
+    }
+
     if (payload.action === 'claim_quest_reward') {
       this.claimQuestReward(payload.npcId);
       return;
     }
 
     if (payload.action.startsWith('accept_quest')) {
-      this.acceptQuestFromDialogue(payload.action, payload.questIds);
+      this.acceptQuestFromDialogue(payload.action, payload.npcId, payload.questIds);
       return;
     }
 
     this.render();
   }
 
-  private acceptQuestFromDialogue(action: string, availableQuestIds: string[]): void {
-    const questId = this.resolveQuestIdForAction(action, availableQuestIds);
+  private acceptQuestFromDialogue(action: string, npcId: string | null, availableQuestIds: string[]): void {
+    const liveQuestIds = npcId ? this.getAvailableQuestIdsForNpc(npcId) : availableQuestIds;
+    const questId = this.resolveQuestIdForAction(action, liveQuestIds);
     if (!questId) {
-      this.messageLog.addMessage('No available quest matches this dialogue option.', MessageType.SYSTEM);
+      this.messageLog.addMessage('No new quest is available right now. Complete current tasks and check back.', MessageType.SYSTEM);
       this.render();
       return;
     }
@@ -1786,13 +2834,186 @@ export class GameScene extends Phaser.Scene {
     }
 
     this.messageLog.addMessage(`Quest accepted: ${quest.title}`, MessageType.SYSTEM);
+    this.saveGameState('quest_accepted', { force: true });
     this.render();
+  }
+
+  private handleRecoveryTaskHook(npcId: string | null, npcName: string | null): void {
+    if (!this.isPostLichRecoveryPhase()) {
+      this.messageLog.addMessage('Recovery work will begin once the Lich threat is ended.', MessageType.SYSTEM);
+      this.render();
+      return;
+    }
+
+    if (npcId !== 'aldric') {
+      this.messageLog.addMessage(
+        `${npcName ?? 'This villager'} asks you to coordinate recovery plans with Elder Aldric.`,
+        MessageType.INFO
+      );
+      this.render();
+      return;
+    }
+
+    const nextQuestState = this.getNextRecoveryQuestStateForAldric();
+    if (!nextQuestState) {
+      this.messageLog.addMessage(
+        'All registered recovery tasks are complete. The town can finally breathe again.',
+        MessageType.HEAL
+      );
+      this.render();
+      return;
+    }
+
+    const turnInName = this.getQuestTurnInName(nextQuestState.quest.turnInNpcId);
+    if (nextQuestState.state === 'ready_to_turn_in') {
+      this.messageLog.addMessage(
+        `Recovery checkpoint: "${nextQuestState.quest.title}" is complete. Report to ${turnInName}.`,
+        MessageType.SYSTEM
+      );
+      this.render();
+      return;
+    }
+
+    if (nextQuestState.state === 'in_progress') {
+      this.messageLog.addMessage(
+        `Current recovery assignment: ${nextQuestState.quest.objective}`,
+        MessageType.SYSTEM
+      );
+      this.render();
+      return;
+    }
+
+    this.messageLog.addMessage(
+      `Next recovery assignment unlocked: ${nextQuestState.quest.title}. Speak with Elder Aldric to accept it.`,
+      MessageType.INFO
+    );
+    this.render();
+  }
+
+  private handleRecoveryMilestoneResponse(npcName: string | null): void {
+    if (!this.isPostLichRecoveryPhase()) {
+      this.messageLog.addMessage('The town is still focused on surviving the dungeon threat.', MessageType.SYSTEM);
+      this.render();
+      return;
+    }
+
+    const total = Math.max(0, this.recoveryTasksTotal);
+    const completed = Math.max(0, this.recoveryTasksCompleted);
+    if (total === 0) {
+      this.messageLog.addMessage(
+        `${npcName ?? 'The townsfolk'} are regrouping while plans for rebuilding are drafted.`,
+        MessageType.INFO
+      );
+      this.render();
+      return;
+    }
+
+    if (completed >= total) {
+      this.messageLog.addMessage(
+        `${npcName ?? 'The townsfolk'} celebrate as every recovery task is finished.`,
+        MessageType.HEAL
+      );
+      this.render();
+      return;
+    }
+
+    const progressRatio = completed / total;
+    if (progressRatio < 0.34) {
+      this.messageLog.addMessage(
+        `Recovery has just begun (${completed}/${total}). Supplies and labor are still scarce.`,
+        MessageType.INFO
+      );
+      this.render();
+      return;
+    }
+
+    if (progressRatio < 0.67) {
+      this.messageLog.addMessage(
+        `Recovery is underway (${completed}/${total}). The town's defenses and work crews are stabilizing.`,
+        MessageType.INFO
+      );
+      this.render();
+      return;
+    }
+
+    this.messageLog.addMessage(
+      `Recovery is nearly complete (${completed}/${total}). One final push should restore the town.`,
+      MessageType.HEAL
+    );
+    this.render();
+  }
+
+  private handleRecoveryPhaseReflection(npcId: string | null, npcName: string | null): void {
+    if (!this.isPostLichRecoveryPhase()) {
+      this.messageLog.addMessage('Everyone remains tense while the Lich still threatens the realm.', MessageType.INFO);
+      this.render();
+      return;
+    }
+
+    switch (npcId) {
+      case 'hilda':
+        this.messageLog.addMessage('Hilda is reforging braces and nails to keep damaged homes standing.', MessageType.INFO);
+        break;
+      case 'maren':
+        this.messageLog.addMessage('Maren reports steady treatment of workers hurt during cleanup.', MessageType.INFO);
+        break;
+      case 'vex':
+        this.messageLog.addMessage('Vex quietly routes spare tools and lanterns to the rebuilding crews.', MessageType.INFO);
+        break;
+      case 'zane':
+        this.messageLog.addMessage('Zane maintains protective wards so the ruins stay calm during recovery.', MessageType.INFO);
+        break;
+      default:
+        this.messageLog.addMessage(`${npcName ?? 'The villager'} shares news from the recovery efforts.`, MessageType.INFO);
+        break;
+    }
+    this.render();
+  }
+
+  private getNextRecoveryQuestStateForAldric():
+    | { quest: QuestDefinition; state: 'ready_to_accept' | 'in_progress' | 'ready_to_turn_in' }
+    | null {
+    const recoveryQuestIds = getQuestIdsForNpc('aldric').filter((questId) => {
+      const quest = QUEST_DEFINITIONS[questId];
+      return !!quest && quest.requiredGamePhase === 'post_lich_recovery';
+    });
+
+    for (const questId of recoveryQuestIds) {
+      const quest = QUEST_DEFINITIONS[questId];
+      if (!quest || this.player.isQuestRewardClaimed(quest.id)) {
+        continue;
+      }
+
+      if (
+        !isQuestUnlocked(quest, (dependencyQuestId) =>
+          this.player.isQuestRewardClaimed(dependencyQuestId)
+        )
+      ) {
+        continue;
+      }
+
+      if (this.player.isQuestCompleted(quest.id)) {
+        return { quest, state: 'ready_to_turn_in' };
+      }
+
+      if (this.player.hasAcceptedQuest(quest.id)) {
+        return { quest, state: 'in_progress' };
+      }
+
+      return { quest, state: 'ready_to_accept' };
+    }
+
+    return null;
   }
 
   private resolveQuestIdForAction(action: string, availableQuestIds: string[]): string | null {
     for (const questId of availableQuestIds) {
       const quest = QUEST_DEFINITIONS[questId];
       if (!quest || !quest.acceptActions.includes(action)) {
+        continue;
+      }
+      // Do not allow re-accepting quests that were already fully claimed.
+      if (this.player?.isQuestRewardClaimed(questId)) {
         continue;
       }
       return questId;
@@ -1832,6 +3053,8 @@ export class GameScene extends Phaser.Scene {
     }
 
     this.messageLog.addMessage(`Quest reward claimed: ${claimableQuest.title}`, MessageType.HEAL);
+    this.updateRecoveryProgressFromQuestState();
+    this.saveGameState('quest_reward_claimed', { force: true });
     this.render();
   }
 
@@ -2204,6 +3427,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private updateQuestProgress(): void {
+    let progressionChanged = false;
     for (const quest of this.player.quests) {
       if (quest.completed) {
         continue;
@@ -2218,11 +3442,16 @@ export class GameScene extends Phaser.Scene {
       }
 
       if (this.player.completeQuest(quest.id)) {
+        progressionChanged = true;
         this.messageLog.addMessage(
           `Quest complete: ${definition.title}. Return to ${this.getQuestTurnInName(definition.turnInNpcId)} for your reward.`,
           MessageType.SYSTEM
         );
       }
+    }
+
+    if (progressionChanged) {
+      this.saveGameState('quest_progress_milestone', { force: true });
     }
   }
 
@@ -2286,13 +3515,209 @@ export class GameScene extends Phaser.Scene {
     this.runAnalytics.causeOfDeath = cause;
   }
 
-  private handleHostileMonsterDeath(monster: Monster, awardXP: boolean): void {
+  private handleHostileMonsterDeath(monster: Monster, awardXP: boolean, fromCombatResult: boolean = false): void {
+    if (monster.templateId === 'lich_king') {
+      if (!fromCombatResult) {
+        this.messageLog.addMessage('The Lich King collapses outside direct combat. Recovery efforts still begin.', MessageType.INFO);
+      }
+      this.enterPostLichRecoveryPhase();
+    }
     this.recordHostileKill(monster);
     this.combatSystem.handleDeath(monster, this.gameMap);
     this.gameMap.removeEntity(monster);
     this.monsterAISystem.cleanupMonster(monster);
     if (awardXP && monster.xpReward) {
       this.awardPlayerXP(monster.xpReward);
+    }
+  }
+
+  private enterPostLichRecoveryPhase(): void {
+    if (this.lichDefeated) {
+      return;
+    }
+    this.lichDefeated = true;
+    this.gamePhase = 'post_lich_recovery';
+    this.updateRecoveryProgressFromQuestState();
+    this.messageLog.addMessage('The Lich King has fallen. Recovery efforts now begin.', MessageType.INFO);
+    this.saveGameState('post_lich_phase_started', { force: true });
+  }
+
+  private updateRecoveryProgressFromQuestState(): void {
+    const previousCompleted = this.recoveryTasksCompleted;
+    const previousTotal = this.recoveryTasksTotal;
+    const wasMiningRouteUnlocked = this.isMiningTownRouteUnlocked(previousCompleted, previousTotal);
+    const postLichQuestIds = this.getPostLichQuestIds();
+    this.recoveryTasksTotal = postLichQuestIds.length;
+    this.recoveryTasksCompleted = postLichQuestIds.filter((questId) =>
+      this.player.isQuestRewardClaimed(questId)
+    ).length;
+
+    if (this.recoveryTasksCompleted === previousCompleted && this.recoveryTasksTotal === previousTotal) {
+      return;
+    }
+
+    if (this.currentFloor === 0 && this.isPostLichRecoveryPhase()) {
+      this.refreshTownRecoveryLayout();
+    }
+
+    if (!this.isPostLichRecoveryPhase()) {
+      return;
+    }
+
+    if (this.recoveryTasksCompleted > previousCompleted) {
+      this.messageLog.addMessage(
+        `Recovery progress advanced: ${this.recoveryTasksCompleted}/${this.recoveryTasksTotal} objectives restored.`,
+        MessageType.INFO
+      );
+    }
+
+    const unlockThreshold = this.getMiningRoadUnlockThreshold(this.recoveryTasksTotal);
+    const previousRoadStage = this.getRecoveryRoadDamageStage(previousCompleted, this.recoveryTasksTotal);
+    const currentRoadStage = this.getRecoveryRoadDamageStage(this.recoveryTasksCompleted, this.recoveryTasksTotal);
+    const roadMilestoneMessage = this.getRoadRecoveryMilestoneMessage(previousRoadStage, currentRoadStage);
+    if (roadMilestoneMessage) {
+      this.messageLog.addMessage(roadMilestoneMessage, MessageType.INFO);
+    }
+
+    const previousRemainingForUnlock = Math.max(0, unlockThreshold - Math.min(previousCompleted, unlockThreshold));
+    const currentRemainingForUnlock = Math.max(
+      0,
+      unlockThreshold - Math.min(this.recoveryTasksCompleted, unlockThreshold)
+    );
+    if (previousRemainingForUnlock > 1 && currentRemainingForUnlock === 1) {
+      this.messageLog.addMessage(
+        'The eastern road is almost clear. One more recovery objective should open the route.',
+        MessageType.HEAL
+      );
+    }
+
+    if (!wasMiningRouteUnlocked && this.isMiningTownRouteUnlocked()) {
+      this.messageLog.addMessage(
+        'The eastern road crews report success: the mining-town route is now passable.',
+        MessageType.HEAL
+      );
+    }
+  }
+
+  private getPostLichQuestIds(): string[] {
+    return Object.values(QUEST_DEFINITIONS)
+      .filter((quest) => quest.requiredGamePhase === 'post_lich_recovery')
+      .map((quest) => quest.id);
+  }
+
+  private getMiningRoadUnlockThreshold(recoveryTasksTotal: number): number {
+    if (recoveryTasksTotal <= 0) {
+      return 1;
+    }
+    const scaledThreshold = Math.ceil(
+      (recoveryTasksTotal * MINING_ROAD_UNLOCK_NUMERATOR) / MINING_ROAD_UNLOCK_DENOMINATOR
+    );
+    return Math.max(1, Math.min(recoveryTasksTotal, scaledThreshold));
+  }
+
+  private isMiningTownRouteUnlocked(
+    recoveryTasksCompleted: number = this.recoveryTasksCompleted,
+    recoveryTasksTotal: number = this.recoveryTasksTotal
+  ): boolean {
+    if (!this.isPostLichRecoveryPhase()) {
+      return true;
+    }
+    const unlockThreshold = this.getMiningRoadUnlockThreshold(recoveryTasksTotal);
+    return recoveryTasksCompleted >= unlockThreshold;
+  }
+
+  private getRecoveryRoadDamageStage(recoveryTasksCompleted: number, recoveryTasksTotal: number): 0 | 1 | 2 | 3 {
+    if (recoveryTasksTotal <= 0) {
+      return 3;
+    }
+    const unlockThreshold = this.getMiningRoadUnlockThreshold(recoveryTasksTotal);
+    const clampedCompleted = Math.max(0, Math.min(recoveryTasksCompleted, unlockThreshold));
+    if (clampedCompleted >= unlockThreshold) {
+      return 0;
+    }
+    const progressToThreshold = clampedCompleted / unlockThreshold;
+    if (progressToThreshold >= 2 / 3) {
+      return 1;
+    }
+    if (progressToThreshold >= 1 / 3) {
+      return 2;
+    }
+    return 3;
+  }
+
+  private getRoadRecoveryMilestoneMessage(
+    previousStage: 0 | 1 | 2 | 3,
+    currentStage: 0 | 1 | 2 | 3
+  ): string | null {
+    if (currentStage >= previousStage) {
+      return null;
+    }
+    if (currentStage === 2) {
+      return 'Road crews have cleared the first barricades on the eastern route.';
+    }
+    if (currentStage === 1) {
+      return 'Most eastern road debris is gone. Final reinforcement crews are moving in.';
+    }
+    return null;
+  }
+
+  private refreshTownRecoveryLayout(): void {
+    const previousPlayerX = this.player.x;
+    const previousPlayerY = this.player.y;
+
+    this.monsters = [];
+    this.noiseSystem.clear();
+
+    const townGen = new TownGenerator();
+    const townData = townGen.generate(this.getTownGenerationOptions());
+    this.gameMap = townData.map;
+    this.spawnNPCsForTown(townData.npcs);
+
+    const playerPosition = this.findNearestWalkableTile(previousPlayerX, previousPlayerY, 8) ?? { x: 19, y: 36 };
+    this.player.setPosition(playerPosition.x, playerPosition.y);
+    this.gameMap.addEntity(this.player);
+
+    this.revealEntireTownMap();
+  }
+
+  private findNearestWalkableTile(startX: number, startY: number, maxRadius: number): { x: number; y: number } | null {
+    const isWalkable = (x: number, y: number): boolean => {
+      const tile = this.gameMap.getTile(x, y);
+      return !!tile && !tile.blocked;
+    };
+
+    if (isWalkable(startX, startY)) {
+      return { x: startX, y: startY };
+    }
+
+    for (let radius = 1; radius <= maxRadius; radius++) {
+      for (let dy = -radius; dy <= radius; dy++) {
+        for (let dx = -radius; dx <= radius; dx++) {
+          if (Math.abs(dx) !== radius && Math.abs(dy) !== radius) {
+            continue;
+          }
+          const x = startX + dx;
+          const y = startY + dy;
+          if (isWalkable(x, y)) {
+            return { x, y };
+          }
+        }
+      }
+    }
+
+    return null;
+  }
+
+  private revealEntireTownMap(): void {
+    for (let y = 0; y < this.gameMap.height; y++) {
+      for (let x = 0; x < this.gameMap.width; x++) {
+        const tile = this.gameMap.getTile(x, y);
+        if (!tile) {
+          continue;
+        }
+        tile.visible = true;
+        tile.explored = true;
+      }
     }
   }
 
@@ -2500,7 +3925,7 @@ export class GameScene extends Phaser.Scene {
         this.messageLog.addMessage(result.message, MessageType.COMBAT);
         this.emitMonsterNoise(companion, NOISE_BUDGET.MONSTER_MELEE, 'companion_melee');
         if (result.killed && nearestHostile.isDead()) {
-          this.handleHostileMonsterDeath(nearestHostile, true);
+          this.handleHostileMonsterDeath(nearestHostile, true, true);
         }
         return;
       }
@@ -2592,6 +4017,7 @@ export class GameScene extends Phaser.Scene {
     if (this.runAnalytics.causeOfDeath === 'Unknown') {
       this.runAnalytics.causeOfDeath = 'Fatal injuries';
     }
+    this.gameSaveManager.clear();
     this.scene.start('GameOverScene', {
       stats: {
         level: this.player.level,
@@ -2669,6 +4095,27 @@ export class GameScene extends Phaser.Scene {
         return true;
       },
     });
+    this.scene.pause('GameScene');
+  }
+
+  private openHelpOverlay(): void {
+    if (this.isOverlaySceneActive() || this.scene.isActive('HelpScene')) {
+      return;
+    }
+
+    this.scene.launch('HelpScene');
+    this.scene.pause('GameScene');
+  }
+
+  private openQuestLogOverlay(): void {
+    if (this.isOverlaySceneActive() || this.scene.isActive('QuestLogScene')) {
+      return;
+    }
+
+    const questLogData: QuestLogSceneInitData = {
+      player: this.player,
+    };
+    this.scene.launch('QuestLogScene', questLogData);
     this.scene.pause('GameScene');
   }
 
@@ -3208,7 +4655,7 @@ export class GameScene extends Phaser.Scene {
     this.applyDurabilityWearOnPlayerAttack();
 
     if (target.isDead()) {
-      this.handleHostileMonsterDeath(target, true);
+      this.handleHostileMonsterDeath(target, true, true);
     }
 
     this.emitPlayerNoise(this.player.x, this.player.y, NOISE_BUDGET.PLAYER_RANGED, 'player_ranged_weapon');
@@ -3239,7 +4686,7 @@ export class GameScene extends Phaser.Scene {
     this.recordPlayerDamageDealt(result.damage);
 
     if (target.isDead()) {
-      this.handleHostileMonsterDeath(target, true);
+      this.handleHostileMonsterDeath(target, true, true);
     }
 
     this.emitPlayerNoise(this.player.x, this.player.y, NOISE_BUDGET.PLAYER_RANGED, 'player_arcane_bolt');
@@ -3288,7 +4735,7 @@ export class GameScene extends Phaser.Scene {
     this.applyTreeCoverMitigation(target, totalLightningDamage);
 
     if (target.isDead()) {
-      this.handleHostileMonsterDeath(target, true);
+      this.handleHostileMonsterDeath(target, true, true);
     }
 
     this.emitPlayerNoise(this.player.x, this.player.y, NOISE_BUDGET.PLAYER_RANGED, 'cast_lightning');
@@ -3585,13 +5032,20 @@ export class GameScene extends Phaser.Scene {
     if (!this.player) {
       return configuredQuestIds.filter((questId) => {
         const quest = QUEST_DEFINITIONS[questId];
-        return !!quest && (!quest.requiresCompletedQuestIds || quest.requiresCompletedQuestIds.length === 0);
+        return (
+          !!quest &&
+          isQuestAvailableInPhase(quest, this.gamePhase) &&
+          (!quest.requiresCompletedQuestIds || quest.requiresCompletedQuestIds.length === 0)
+        );
       });
     }
 
     return configuredQuestIds.filter((questId) => {
       const quest = QUEST_DEFINITIONS[questId];
       if (!quest) {
+        return false;
+      }
+      if (!isQuestAvailableInPhase(quest, this.gamePhase)) {
         return false;
       }
       if (
@@ -3629,7 +5083,15 @@ export class GameScene extends Phaser.Scene {
     }
 
     if (!this.player) {
-      return action !== 'claim_quest_reward' && !action.startsWith('accept_quest');
+      return (
+        action !== 'claim_quest_reward' &&
+        !action.startsWith('accept_quest') &&
+        !action.startsWith('recovery_')
+      );
+    }
+
+    if (action.startsWith('recovery_')) {
+      return this.isPostLichRecoveryPhase();
     }
 
     if (action === 'claim_quest_reward') {
@@ -3641,6 +5103,10 @@ export class GameScene extends Phaser.Scene {
     }
 
     return true;
+  }
+
+  private isPostLichRecoveryPhase(): boolean {
+    return this.gamePhase === 'post_lich_recovery';
   }
 
   private findNearestValidNPCTile(
@@ -3672,16 +5138,20 @@ export class GameScene extends Phaser.Scene {
   }
 
   private isNPCSpawnTileValid(x: number, y: number): boolean {
-    if (!this.gameMap.isInBounds(x, y)) {
+    return this.isNPCSpawnTileValidOnMap(this.gameMap, x, y);
+  }
+
+  private isNPCSpawnTileValidOnMap(map: GameMap, x: number, y: number): boolean {
+    if (!map.isInBounds(x, y)) {
       return false;
     }
 
-    const tile = this.gameMap.getTile(x, y);
+    const tile = map.getTile(x, y);
     if (!tile || tile.blocked) {
       return false;
     }
 
-    return this.gameMap.getEntityAt(x, y) === null;
+    return map.getEntityAt(x, y) === null;
   }
 
   private mapConfigNPCTypeToEntityNPCType(type: ConfigNPCType): EntityNPCType {
@@ -3752,11 +5222,13 @@ export class GameScene extends Phaser.Scene {
 
     this.gameMap.removeEntity(this.player);
     this.monsters = this.monsters.filter((monster) => !monster.isDead());
-    this.dungeonFloorStates.set(this.currentFloor, {
-      map: this.gameMap,
-      monsters: [...this.monsters],
-      npcs: [...this.npcs],
-    });
+    if (this.gameMap) {
+      this.dungeonFloorStates.set(this.currentFloor, {
+        map: this.gameMap,
+        monsters: [...this.monsters],
+        npcs: [...this.npcs],
+      });
+    }
   }
 
   private rebuildFloorEntitiesFromMap(): void {
@@ -3833,6 +5305,7 @@ export class GameScene extends Phaser.Scene {
     entryStairType: TileType.STAIRS_UP | TileType.STAIRS_DOWN,
     carriedCompanion: Monster | null = null
   ): void {
+    this.wakeGameLoop();
     const previousFloor = this.currentFloor;
     const previousMap = this.gameMap;
     this.currentFloor = targetFloor;
@@ -3885,7 +5358,7 @@ export class GameScene extends Phaser.Scene {
       }
     }
 
-    if (this.dungeonGenerationMode === 'persistent') {
+    if (this.dungeonGenerationMode === 'persistent' && this.gameMap) {
       this.dungeonFloorStates.set(targetFloor, {
         map: this.gameMap,
         monsters: [...this.monsters],
@@ -3895,7 +5368,9 @@ export class GameScene extends Phaser.Scene {
 
     this.markDungeonSpawnAreaExplored(safeSpawn.x, safeSpawn.y);
     fovSystem.compute(this.gameMap, safeSpawn.x, safeSpawn.y, 10);
+    this.saveGameState('floor_transition', { force: true });
     this.messageLog.addMessage(`Entered dungeon level ${targetFloor}.`, MessageType.INFO);
+    this.wakeGameLoop();
     this.render();
   }
 
@@ -3912,85 +5387,125 @@ export class GameScene extends Phaser.Scene {
   }
 
   private goDownStairs(): void {
-    this.clearAltarPactOnFloorExit();
-    this.closeAltarSelectionOverlay();
-    const carriedCompanion = this.detachPersistentCompanionForTransition();
-    this.cacheCurrentDungeonFloorState();
-    const targetFloor = this.currentFloor + 1;
-    console.log('=== DESCENDING TO FLOOR', targetFloor, '===');
-    this.messageLog.addMessage(`Descending to dungeon level ${targetFloor}...`, MessageType.SYSTEM);
-    this.enterDungeonFloor(targetFloor, TileType.STAIRS_UP, carriedCompanion);
-    console.log('=== FLOOR', targetFloor, 'READY ===');
+    this.beginFloorTransition();
+    try {
+      this.clearAltarPactOnFloorExit();
+      this.closeAltarSelectionOverlay();
+      const carriedCompanion = this.detachPersistentCompanionForTransition();
+      this.cacheCurrentDungeonFloorState();
+      const targetFloor = this.currentFloor + 1;
+      console.log('=== DESCENDING TO FLOOR', targetFloor, '===');
+      this.messageLog.addMessage(`Descending to dungeon level ${targetFloor}...`, MessageType.SYSTEM);
+      this.enterDungeonFloor(targetFloor, TileType.STAIRS_UP, carriedCompanion);
+      this.wakeGameLoop();
+      console.log('=== FLOOR', targetFloor, 'READY ===');
+    } finally {
+      this.endFloorTransition();
+    }
   }
 
   private goUpStairs(): void {
-    this.clearAltarPactOnFloorExit();
-    this.closeAltarSelectionOverlay();
-    if (this.currentFloor === 1) {
-      const carriedCompanion = this.detachPersistentCompanionForTransition();
-      this.cacheCurrentDungeonFloorState();
-      this.currentFloor = 0;
-      console.log('=== RETURNING TO TOWN ===');
-      this.messageLog.addMessage('Returning to town...', MessageType.SYSTEM);
-      
-      // Clear monsters when returning to town
-      this.monsters = [];
-      this.noiseSystem.clear();
-      
-      const townGen = new TownGenerator();
-      const townData = townGen.generate();
-      this.gameMap = townData.map;
-      
-      this.spawnNPCsForTown(townData.npcs);
-      console.log('Respawned', this.npcs.length, 'NPCs in town');
+    this.beginFloorTransition();
+    try {
+      this.clearAltarPactOnFloorExit();
+      this.closeAltarSelectionOverlay();
+      if (this.currentFloor === 1) {
+        const carriedCompanion = this.detachPersistentCompanionForTransition();
+        this.cacheCurrentDungeonFloorState();
+        this.currentFloor = 0;
+        console.log('=== RETURNING TO TOWN ===');
+        this.messageLog.addMessage('Returning to town...', MessageType.SYSTEM);
+        
+        // Clear monsters when returning to town
+        this.monsters = [];
+        this.noiseSystem.clear();
+        
+        const townGen = new TownGenerator();
+        const townData = townGen.generate(this.getTownGenerationOptions());
+        this.gameMap = townData.map;
+        
+        this.spawnNPCsForTown(townData.npcs);
+        console.log('Respawned', this.npcs.length, 'NPCs in town');
 
-      // Return the player to the town dungeon entrance (stairs down)
-      let returnX = 19;
-      let returnY = 36;
-      let foundEntrance = false;
-      for (let y = 1; y < this.gameMap.height - 1; y++) {
-        for (let x = 1; x < this.gameMap.width - 1; x++) {
-          const tile = this.gameMap.getTile(x, y);
-          if (tile?.type === TileType.STAIRS_DOWN) {
-            returnX = x;
-            returnY = y;
-            foundEntrance = true;
-            break;
+        // Return the player to the town dungeon entrance (stairs down)
+        let returnX = 19;
+        let returnY = 36;
+        let foundEntrance = false;
+        for (let y = 1; y < this.gameMap.height - 1; y++) {
+          for (let x = 1; x < this.gameMap.width - 1; x++) {
+            const tile = this.gameMap.getTile(x, y);
+            if (tile?.type === TileType.STAIRS_DOWN) {
+              returnX = x;
+              returnY = y;
+              foundEntrance = true;
+              break;
+            }
           }
+          if (foundEntrance) break;
         }
-        if (foundEntrance) break;
-      }
 
-      this.player.setPosition(returnX, returnY);
-      this.gameMap.addEntity(this.player);
-      if (carriedCompanion) {
-        this.messageLog.addMessage(
-          `${carriedCompanion.name} waits for you at the dungeon entrance.`,
-          MessageType.INFO
-        );
-      }
-      
-      // Town: Enable full visibility
-      console.log('Town mode: enabling full visibility');
-      for (let y = 0; y < this.gameMap.height; y++) {
-        for (let x = 0; x < this.gameMap.width; x++) {
-          const tile = this.gameMap.getTile(x, y);
-          if (tile) {
-            tile.visible = true;
-            tile.explored = true;
-          }
+        this.player.setPosition(returnX, returnY);
+        this.gameMap.addEntity(this.player);
+        if (carriedCompanion) {
+          this.messageLog.addMessage(
+            `${carriedCompanion.name} waits for you at the dungeon entrance.`,
+            MessageType.INFO
+          );
         }
+        
+        // Town: Enable full visibility
+        console.log('Town mode: enabling full visibility');
+        this.revealEntireTownMap();
+        this.saveGameState('floor_transition', { force: true });
+        
+        this.wakeGameLoop();
+        this.render();
+      } else if (this.currentFloor > 1) {
+        const carriedCompanion = this.detachPersistentCompanionForTransition();
+        this.cacheCurrentDungeonFloorState();
+        const targetFloor = this.currentFloor - 1;
+        console.log('=== ASCENDING TO FLOOR', targetFloor, '===');
+        this.messageLog.addMessage(`Ascending to dungeon level ${targetFloor}...`, MessageType.SYSTEM);
+        this.enterDungeonFloor(targetFloor, TileType.STAIRS_DOWN, carriedCompanion);
       }
-      
-      this.render();
-    } else if (this.currentFloor > 1) {
-      const carriedCompanion = this.detachPersistentCompanionForTransition();
-      this.cacheCurrentDungeonFloorState();
-      const targetFloor = this.currentFloor - 1;
-      console.log('=== ASCENDING TO FLOOR', targetFloor, '===');
-      this.messageLog.addMessage(`Ascending to dungeon level ${targetFloor}...`, MessageType.SYSTEM);
-      this.enterDungeonFloor(targetFloor, TileType.STAIRS_DOWN, carriedCompanion);
+    } finally {
+      this.endFloorTransition();
     }
+  }
+
+  private getPhaseStatusSegment(): string {
+    if (this.gamePhase !== 'post_lich_recovery') {
+      return '';
+    }
+    const unlockThreshold = this.getMiningRoadUnlockThreshold(this.recoveryTasksTotal);
+    const roadProgress = Math.min(this.recoveryTasksCompleted, unlockThreshold);
+    return `Phase: Recovery ${this.recoveryTasksCompleted}/${this.recoveryTasksTotal} | Road ${roadProgress}/${unlockThreshold}`;
+  }
+
+  private getRecoveryStatusLine(): string {
+    if (!this.isPostLichRecoveryPhase()) {
+      return '';
+    }
+
+    const unlockThreshold = this.getMiningRoadUnlockThreshold(this.recoveryTasksTotal);
+    const roadProgress = Math.min(this.recoveryTasksCompleted, unlockThreshold);
+    const progressRatio = unlockThreshold > 0 ? roadProgress / unlockThreshold : 0;
+    const barWidth = 10;
+    const filled = Math.max(0, Math.min(barWidth, Math.round(progressRatio * barWidth)));
+    const bar = `${'#'.repeat(filled)}${'-'.repeat(barWidth - filled)}`;
+    const state = this.isMiningTownRouteUnlocked() ? 'Unlocked' : 'Repairing';
+    return `Road Recovery: [${bar}] ${roadProgress}/${unlockThreshold} (${state})`;
+  }
+
+  private getTownGenerationOptions(): TownGenerationOptions {
+    if (this.gamePhase !== 'post_lich_recovery') {
+      return { phase: 'dungeon' };
+    }
+    return {
+      phase: 'post_lich_recovery',
+      recoveryTasksCompleted: this.recoveryTasksCompleted,
+      recoveryTasksTotal: this.recoveryTasksTotal,
+    };
   }
 
   private render(): void {
@@ -4133,12 +5648,20 @@ export class GameScene extends Phaser.Scene {
     this.asciiRenderer.drawTile(this.player.x, this.player.y, '@', 0xffffff);
 
     // Render HUD (top line)
-    const status = `${this.player.playerClass.toUpperCase()} Lv${this.player.level} | HP: ${this.player.currentHP}/${this.player.maxHP} | XP: ${this.player.xp} | Gold: ${this.player.getGoldString()} | Floor: ${this.currentFloor === 0 ? 'Town' : this.currentFloor}`;
+    const phaseStatus = this.getPhaseStatusSegment();
+    const status = `${this.player.playerClass.toUpperCase()} Lv${this.player.level} | HP: ${this.player.currentHP}/${this.player.maxHP} | XP: ${this.player.xp} | Gold: ${this.player.getGoldString()} | Floor: ${this.currentFloor === 0 ? 'Town' : this.currentFloor}${phaseStatus ? ` | ${phaseStatus}` : ''}`;
     this.asciiRenderer.drawText(1, 0, status, 0xffff00);
+
+    let objectiveLineY = 2;
+    const recoveryStatusLine = this.getRecoveryStatusLine();
+    if (recoveryStatusLine) {
+      this.asciiRenderer.drawText(1, 2, recoveryStatusLine.substring(0, 78), 0x88ff88);
+      objectiveLineY = 3;
+    }
 
     const objective = this.player.getPrimaryObjectiveText();
     if (objective) {
-      this.asciiRenderer.drawText(1, 2, `Quest: ${objective}`.substring(0, 78), 0x66ccff);
+      this.asciiRenderer.drawText(1, objectiveLineY, `Quest: ${objective}`.substring(0, 78), 0x66ccff);
     }
 
     // Render messages (bottom 3 lines)
@@ -4151,7 +5674,7 @@ export class GameScene extends Phaser.Scene {
     this.asciiRenderer.drawText(
       1,
       1,
-      'Move: Arrows/WASD | Q ranged | G pickup | I inv | T talk | F drink | X disarm | R altar | V summon | L lightning | </> stairs',
+      'Move: Arrows/WASD | H: help | J: quest log',
       0xaaaaaa
     );
 

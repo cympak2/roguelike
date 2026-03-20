@@ -6,6 +6,17 @@
 import { GameMap, TileType } from './map';
 import { NPCType } from '../config/npc-data';
 
+export type TownGenerationPhase = 'dungeon' | 'post_lich_recovery';
+
+export interface TownGenerationOptions {
+  phase?: TownGenerationPhase;
+  recoveryTasksCompleted?: number;
+  recoveryTasksTotal?: number;
+}
+
+const MINING_ROUTE_UNLOCK_NUMERATOR = 3;
+const MINING_ROUTE_UNLOCK_DENOMINATOR = 5;
+
 /**
  * Represents an NPC spawn point in the town
  */
@@ -85,8 +96,9 @@ export class TownGenerator {
   /**
    * Generate the town map and return NPC spawn points
    */
-  generate(): { map: GameMap; npcs: NPCSpawnPoint[] } {
+  generate(options: TownGenerationOptions = {}): { map: GameMap; npcs: NPCSpawnPoint[] } {
     const map = new GameMap(this.TOWN_WIDTH, this.TOWN_HEIGHT);
+    const phase = options.phase ?? 'dungeon';
 
     // Fill with grass base
     this.fillWithGrass(map);
@@ -105,6 +117,10 @@ export class TownGenerator {
     // Create connecting paths
     this.createPaths(map);
 
+    if (phase === 'post_lich_recovery') {
+      this.applyPostLichRecoveryLayout(map, options);
+    }
+
     // Add decorative elements
     this.addDecorations(map);
 
@@ -112,6 +128,60 @@ export class TownGenerator {
     const npcs = this.createNPCSpawns();
 
     return { map, npcs };
+  }
+
+  private applyPostLichRecoveryLayout(map: GameMap, options: TownGenerationOptions): void {
+    const recoveryTasksTotal = Math.max(0, options.recoveryTasksTotal ?? 0);
+    const recoveryTasksCompleted = Math.max(
+      0,
+      Math.min(options.recoveryTasksCompleted ?? 0, recoveryTasksTotal || Number.MAX_SAFE_INTEGER)
+    );
+    const miningRoadUnlockThreshold = this.getMiningRoadUnlockThreshold(recoveryTasksTotal);
+    const miningRoadDamageStage = this.getRoadDamageStage(
+      recoveryTasksCompleted,
+      recoveryTasksTotal,
+      miningRoadUnlockThreshold
+    );
+    const mainRoadDamageStage = this.getRoadDamageStage(recoveryTasksCompleted, recoveryTasksTotal, recoveryTasksTotal);
+
+    this.createDamagedOldRoadZone(map, miningRoadDamageStage);
+    this.createMainRoadRockslideZone(map, mainRoadDamageStage);
+    this.createWorkerCampZone(map, recoveryTasksCompleted, recoveryTasksTotal);
+  }
+
+  private getMiningRoadUnlockThreshold(recoveryTasksTotal: number): number {
+    if (recoveryTasksTotal <= 0) {
+      return 1;
+    }
+    const scaledThreshold = Math.ceil(
+      (recoveryTasksTotal * MINING_ROUTE_UNLOCK_NUMERATOR) / MINING_ROUTE_UNLOCK_DENOMINATOR
+    );
+    return Math.max(1, Math.min(recoveryTasksTotal, scaledThreshold));
+  }
+
+  private getRoadDamageStage(
+    recoveryTasksCompleted: number,
+    recoveryTasksTotal: number,
+    unlockThreshold: number
+  ): 0 | 1 | 2 | 3 {
+    if (recoveryTasksTotal <= 0) {
+      return 3;
+    }
+
+    const clampedThreshold = Math.max(1, Math.min(unlockThreshold, recoveryTasksTotal));
+    const clampedCompleted = Math.max(0, Math.min(recoveryTasksCompleted, recoveryTasksTotal));
+    if (clampedCompleted >= clampedThreshold) {
+      return 0;
+    }
+
+    const progressToThreshold = clampedCompleted / clampedThreshold;
+    if (progressToThreshold >= 2 / 3) {
+      return 1;
+    }
+    if (progressToThreshold >= 1 / 3) {
+      return 2;
+    }
+    return 3;
   }
 
   /**
@@ -259,9 +329,6 @@ export class TownGenerator {
    * Create stone paths connecting buildings
    */
   private createPaths(map: GameMap): void {
-    // Paths to town square from each building
-    const squareCenter = { x: 19, y: 18 };
-
     // Path from Elder's House to square
     this.createPath(map, 20, 10, 20, 12);
     this.createPath(map, 20, 12, 19, 12);
@@ -316,6 +383,168 @@ export class TownGenerator {
         }
       }
     }
+  }
+
+  private createMainRoadRockslideZone(map: GameMap, damageStage: 0 | 1 | 2 | 3): void {
+    for (let y = 29; y <= 32; y++) {
+      this.setRoadTile(map, 19, y);
+    }
+
+    const heavyRubble = [
+      { x: 18, y: 29 },
+      { x: 19, y: 29 },
+      { x: 20, y: 29 },
+      { x: 18, y: 30 },
+      { x: 19, y: 30 },
+      { x: 20, y: 30 },
+      { x: 17, y: 31 },
+      { x: 18, y: 31 },
+      { x: 19, y: 31 },
+      { x: 20, y: 31 },
+      { x: 21, y: 31 },
+      { x: 18, y: 32 },
+      { x: 19, y: 32 },
+      { x: 20, y: 32 },
+    ];
+
+    const mediumRubble = [
+      { x: 18, y: 30 },
+      { x: 19, y: 30 },
+      { x: 20, y: 30 },
+      { x: 18, y: 31 },
+      { x: 19, y: 31 },
+      { x: 20, y: 31 },
+      { x: 19, y: 32 },
+    ];
+
+    const lightRubble = [
+      { x: 19, y: 30 },
+      { x: 19, y: 31 },
+    ];
+
+    const rubble = damageStage === 3 ? heavyRubble : damageStage === 2 ? mediumRubble : damageStage === 1 ? lightRubble : [];
+
+    for (const pos of rubble) {
+      if (map.isInBounds(pos.x, pos.y)) {
+        map.setTile(pos.x, pos.y, TileType.STONE, true, true);
+      }
+    }
+  }
+
+  private createDamagedOldRoadZone(map: GameMap, damageStage: 0 | 1 | 2 | 3): void {
+    for (let x = 25; x <= 38; x++) {
+      this.setRoadTile(map, x, 21);
+    }
+    for (let y = 17; y <= 21; y++) {
+      this.setRoadTile(map, 38, y);
+    }
+
+    const heavyDamage = [
+      { x: 27, y: 21 },
+      { x: 29, y: 21 },
+      { x: 31, y: 21 },
+      { x: 33, y: 21 },
+      { x: 35, y: 21 },
+      { x: 37, y: 21 },
+      { x: 38, y: 17 },
+      { x: 38, y: 19 },
+    ];
+
+    const mediumDamage = [
+      { x: 29, y: 21 },
+      { x: 32, y: 21 },
+      { x: 35, y: 21 },
+      { x: 38, y: 18 },
+    ];
+
+    const lightDamage = [
+      { x: 33, y: 21 },
+      { x: 38, y: 19 },
+    ];
+
+    const damage = damageStage === 3 ? heavyDamage : damageStage === 2 ? mediumDamage : damageStage === 1 ? lightDamage : [];
+
+    for (const pos of damage) {
+      if (map.isInBounds(pos.x, pos.y)) {
+        map.setTile(pos.x, pos.y, TileType.STONE, true, true);
+      }
+    }
+  }
+
+  private createWorkerCampZone(map: GameMap, recoveryTasksCompleted: number, recoveryTasksTotal: number): void {
+    const campArea = {
+      left: 23,
+      right: 29,
+      top: 31,
+      bottom: 37,
+    };
+
+    for (let y = campArea.top; y <= campArea.bottom; y++) {
+      for (let x = campArea.left; x <= campArea.right; x++) {
+        const tile = map.getTile(x, y);
+        if (tile && tile.type === TileType.GRASS) {
+          map.setTile(x, y, TileType.FLOOR, false, false);
+        }
+      }
+    }
+
+    const tentWalls = [
+      { x: 24, y: 33 },
+      { x: 25, y: 33 },
+      { x: 26, y: 33 },
+      { x: 24, y: 34 },
+      { x: 26, y: 34 },
+      { x: 27, y: 35 },
+      { x: 28, y: 35 },
+      { x: 29, y: 35 },
+      { x: 27, y: 36 },
+      { x: 29, y: 36 },
+    ];
+    const tentDoors = [
+      { x: 25, y: 34 },
+      { x: 28, y: 36 },
+    ];
+
+    for (const pos of tentWalls) {
+      if (map.isInBounds(pos.x, pos.y)) {
+        map.setTile(pos.x, pos.y, TileType.WALL, true, true);
+      }
+    }
+    for (const pos of tentDoors) {
+      if (map.isInBounds(pos.x, pos.y)) {
+        map.setTile(pos.x, pos.y, TileType.DOOR_OPEN, false, false);
+      }
+    }
+
+    map.setTile(26, 36, TileType.CAMPFIRE, false, false);
+    map.setTile(26, 35, TileType.STONE, true, true);
+
+    const completionRatio =
+      recoveryTasksTotal > 0 ? Math.min(1, recoveryTasksCompleted / recoveryTasksTotal) : 0;
+    const supplyCrates = completionRatio >= 1
+      ? [{ x: 29, y: 33 }]
+      : completionRatio >= 0.66
+        ? [{ x: 28, y: 33 }, { x: 29, y: 33 }]
+        : [{ x: 27, y: 32 }, { x: 28, y: 33 }, { x: 29, y: 33 }];
+
+    for (const pos of supplyCrates) {
+      if (map.isInBounds(pos.x, pos.y)) {
+        map.setTile(pos.x, pos.y, TileType.CHEST_CLOSED, true, true);
+      }
+    }
+
+    this.createPath(map, 23, 33, 21, 31);
+  }
+
+  private setRoadTile(map: GameMap, x: number, y: number): void {
+    if (!map.isInBounds(x, y)) {
+      return;
+    }
+    const tile = map.getTile(x, y);
+    if (!tile || tile.type === TileType.WALL || tile.type === TileType.FLOOR || tile.type === TileType.FOUNTAIN) {
+      return;
+    }
+    map.setTile(x, y, TileType.STONE, false, false);
   }
 
   /**

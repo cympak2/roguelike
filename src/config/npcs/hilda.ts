@@ -16,6 +16,7 @@ export const HILDA_NPC: NPCDefinition =
         options: [
           { text: 'Show me your weapons.', action: '', nextDialogueId: 'shop_weapons' },
           { text: 'What armor do you have?', action: '', nextDialogueId: 'shop_armor' },
+          { text: 'How is rebuilding work going?', action: 'recovery_phase_reflection', nextDialogueId: 'recovery_reflection' },
           { text: 'Can you repair my equipment?', action: '', nextDialogueId: 'repair_service' },
           { text: 'Can you craft with monster materials?', action: '', nextDialogueId: 'crafting_service' },
           { text: 'Tell me about your craft.', action: '', nextDialogueId: 'about_craft' },
@@ -150,6 +151,14 @@ export const HILDA_NPC: NPCDefinition =
           { text: 'Imprint an Enchanting Sigil (Stolen Ring x1, XP Crystal x2).', action: 'craft_enchanting_sigil', nextDialogueId: 'crafting_service' },
           { text: 'Brew Antivenom Pack (Rat Tail x2, Poison Fang x1, Bone Fragment x1).', action: 'craft_antivenom_pack', nextDialogueId: 'crafting_service' },
           { text: 'Maybe another time.', action: '', nextDialogueId: 'start' },
+        ],
+      },
+      {
+        id: 'recovery_reflection',
+        text: 'With the Lich gone, half my forge goes to beams, brackets, and nails for the rebuild. Armor can wait if a roof is about to collapse.',
+        options: [
+          { text: 'Keep me outfitted, and I will keep the roads clear.', action: '', nextDialogueId: 'start' },
+          { text: 'Understood. I will let you get back to work.', action: '', nextDialogueId: 'end' },
         ],
       },
       {

@@ -1,15 +1,29 @@
 import Phaser from 'phaser';
 import gameConfig from './config/gameConfig';
-import { BootScene } from './scenes/BootScene';
-import { MainMenuScene } from './scenes/MainMenuScene';
-import { GameScene } from './scenes/GameScene';
-import { InventoryScene } from './scenes/InventoryScene';
-import { DialogueScene } from './scenes/DialogueScene';
-import { GameOverScene } from './scenes/GameOverScene';
-import { ShopScene } from './scenes/ShopScene';
+import {
+  BootScene,
+  MainMenuScene,
+  GameScene,
+  InventoryScene,
+  DialogueScene,
+  GameOverScene,
+  ShopScene,
+  HelpScene,
+  QuestLogScene,
+} from './scenes';
 
 // Add scenes to the config
-gameConfig.scene = [BootScene, MainMenuScene, GameScene, InventoryScene, DialogueScene, ShopScene, GameOverScene];
+gameConfig.scene = [
+  BootScene,
+  MainMenuScene,
+  GameScene,
+  InventoryScene,
+  DialogueScene,
+  ShopScene,
+  HelpScene,
+  QuestLogScene,
+  GameOverScene,
+];
 
 // Create the game instance
 const game = new Phaser.Game(gameConfig);

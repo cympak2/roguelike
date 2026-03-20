@@ -16,6 +16,7 @@ export const VEX_NPC: NPCDefinition =
         options: [
           { text: 'What kind of tools do you sell?', action: '', nextDialogueId: 'shop_tools' },
           { text: 'Tell me what you know about the dungeon.', action: '', nextDialogueId: 'dungeon_hints' },
+          { text: 'How are things after the Lich fell?', action: 'recovery_phase_reflection', nextDialogueId: 'recovery_reflection' },
           { text: 'How did you become a thief?', action: '', nextDialogueId: 'backstory' },
           { text: 'Do you have any special jobs?', action: '', nextDialogueId: 'special_jobs' },
           { text: 'I finished the job you asked for.', action: 'claim_quest_reward', nextDialogueId: 'end' },
@@ -199,6 +200,14 @@ export const VEX_NPC: NPCDefinition =
         text: 'Suit yourself. The offer stands if you change your mind. We all have to make compromises sometimes.',
         options: [
           { text: 'Maybe later.', action: '', nextDialogueId: 'end' },
+        ],
+      },
+      {
+        id: 'recovery_reflection',
+        text: 'Business changed overnight. Less stealing, more "acquiring" spare lanterns, rope, and lockboxes for cleanup teams. Turns out rebuilding pays, too.',
+        options: [
+          { text: 'Keep the supplies flowing.', action: '', nextDialogueId: 'start' },
+          { text: 'I should get moving.', action: '', nextDialogueId: 'end' },
         ],
       },
       {

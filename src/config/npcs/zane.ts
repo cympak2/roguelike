@@ -15,6 +15,7 @@ export const ZANE_NPC: NPCDefinition =
         text: 'Ah, a visitor... Few find their way to my humble dwelling at the edge of town. Most avoid the hermit who speaks of old things and forgotten times. But you... you seek knowledge, perhaps? Or merely curiosity brought you here?',
         options: [
           { text: 'Tell me about the ancient dungeon.', action: '', nextDialogueId: 'lore_dungeon' },
+          { text: 'What changed now that the Lich is gone?', action: 'recovery_phase_reflection', nextDialogueId: 'recovery_reflection' },
           { text: 'Who are you, exactly?', action: '', nextDialogueId: 'about_zane' },
           { text: 'Do you have any tasks for me?', action: '', nextDialogueId: 'side_quest' },
           { text: 'I have returned with news from the dungeon.', action: 'claim_quest_reward', nextDialogueId: 'end' },
@@ -202,6 +203,14 @@ export const ZANE_NPC: NPCDefinition =
         options: [
           { text: 'I will find it, Zane.', action: '', nextDialogueId: 'end' },
           { text: 'Before I go, tell me more.', action: '', nextDialogueId: 'start' },
+        ],
+      },
+      {
+        id: 'recovery_reflection',
+        text: 'The shadow crown is broken, but old wards still tremble. I spend my nights steadying the ley lines so your workers can rebuild without waking what should stay buried.',
+        options: [
+          { text: 'I appreciate your vigilance.', action: '', nextDialogueId: 'start' },
+          { text: 'May your wards hold.', action: '', nextDialogueId: 'end' },
         ],
       },
       {

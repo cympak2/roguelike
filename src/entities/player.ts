@@ -525,6 +525,14 @@ export class Player extends Entity {
     return this.statusEffects;
   }
 
+  restoreStatusEffects(effects: readonly StatusEffect[]): void {
+    this.statusEffects = effects.map((effect) => ({
+      ...effect,
+      duration: Math.max(1, Math.floor(effect.duration)),
+      power: Math.max(1, Math.floor(effect.power)),
+    }));
+  }
+
   addStatusEffect(effect: StatusEffect): void {
     if (effect.type === 'phase') {
       return;
@@ -649,6 +657,10 @@ export class Player extends Entity {
 
   getUnlockedTalentIds(): readonly string[] {
     return Array.from(this.unlockedTalentIds);
+  }
+
+  restoreUnlockedTalentIds(ids: Iterable<string>): void {
+    this.unlockedTalentIds = new Set(Array.from(ids, (id) => String(id)));
   }
 
   private unlockTalentsForLevel(level: number): ClassTalent[] {

@@ -18,6 +18,8 @@ export interface QuestCompletionRule {
   quantity?: number;
 }
 
+export type QuestGamePhase = 'dungeon' | 'post_lich_recovery';
+
 export interface QuestDefinition {
   id: string;
   title: string;
@@ -25,6 +27,7 @@ export interface QuestDefinition {
   turnInNpcId: string;
   acceptActions: string[];
   requiresCompletedQuestIds?: string[];
+  requiredGamePhase?: QuestGamePhase;
   completion: QuestCompletionRule;
   turnInRequirements?: QuestTurnInRequirement[];
   rewards: QuestReward[];
@@ -40,7 +43,7 @@ export const QUEST_DEFINITIONS: Record<string, QuestDefinition> = {
     completion: { type: 'clear_floor', floor: 1 },
     rewards: [
       { gold: 100 },
-      { itemId: 'scroll_identify', itemQuantity: 1 },
+      { itemId: 'misc_amulet_protection', itemQuantity: 1 },
     ],
   },
   clear_dungeon_level_2: {
@@ -120,10 +123,87 @@ export const QUEST_DEFINITIONS: Record<string, QuestDefinition> = {
       { itemId: 'scroll_enchant_weapon', itemQuantity: 1 },
     ],
   },
+  repair_broken_wheelbarrow: {
+    id: 'repair_broken_wheelbarrow',
+    title: 'Wheelbarrow Repairs',
+    objective: 'Gather sturdy rope and bring it to Elder Aldric so the workers can repair a broken wheelbarrow.',
+    turnInNpcId: 'aldric',
+    acceptActions: ['accept_quest'],
+    requiresCompletedQuestIds: ['find_dawnbringer'],
+    requiredGamePhase: 'post_lich_recovery',
+    completion: { type: 'have_item', itemId: 'rope', quantity: 2 },
+    turnInRequirements: [{ itemId: 'rope', quantity: 2 }],
+    rewards: [
+      { gold: 140 },
+      { itemId: 'potion_strength', itemQuantity: 1 },
+    ],
+  },
+  deliver_recovery_tools: {
+    id: 'deliver_recovery_tools',
+    title: 'Tools for the Crew',
+    objective: 'Bring practical tools for the rebuilding crew: one lockpick set and two torches.',
+    turnInNpcId: 'aldric',
+    acceptActions: ['accept_quest'],
+    requiresCompletedQuestIds: ['repair_broken_wheelbarrow'],
+    requiredGamePhase: 'post_lich_recovery',
+    completion: { type: 'have_item', itemId: 'lockpick_set', quantity: 1 },
+    turnInRequirements: [
+      { itemId: 'lockpick_set', quantity: 1 },
+      { itemId: 'torch', quantity: 2 },
+    ],
+    rewards: [
+      { gold: 170 },
+      { itemId: 'scroll_identify', itemQuantity: 1 },
+    ],
+  },
+  stabilize_dangerous_stones: {
+    id: 'stabilize_dangerous_stones',
+    title: 'Shore Up the Rubble',
+    objective: 'Help secure the unstable stone pile by delivering throwing rocks and support rope.',
+    turnInNpcId: 'aldric',
+    acceptActions: ['accept_quest'],
+    requiresCompletedQuestIds: ['deliver_recovery_tools'],
+    requiredGamePhase: 'post_lich_recovery',
+    completion: { type: 'have_item', itemId: 'weapon_throwing_rocks', quantity: 1 },
+    turnInRequirements: [
+      { itemId: 'weapon_throwing_rocks', quantity: 1 },
+      { itemId: 'rope', quantity: 1 },
+    ],
+    rewards: [
+      { gold: 200 },
+      { itemId: 'potion_health', itemQuantity: 1 },
+    ],
+  },
+  aid_injured_workers: {
+    id: 'aid_injured_workers',
+    title: 'Aid for the Injured',
+    objective: 'Deliver recovery supplies to the injured workers: two health potions and two empty flasks.',
+    turnInNpcId: 'aldric',
+    acceptActions: ['accept_quest'],
+    requiresCompletedQuestIds: ['stabilize_dangerous_stones'],
+    requiredGamePhase: 'post_lich_recovery',
+    completion: { type: 'have_item', itemId: 'potion_health', quantity: 2 },
+    turnInRequirements: [
+      { itemId: 'potion_health', quantity: 2 },
+      { itemId: 'misc_empty_flask', quantity: 2 },
+    ],
+    rewards: [
+      { gold: 240 },
+      { xp: 200 },
+      { itemId: 'scroll_enchant_armor', itemQuantity: 1 },
+    ],
+  },
 };
 
 export const QUEST_IDS_BY_NPC: Record<string, string[]> = {
-  aldric: ['clear_dungeon_level_1', 'clear_dungeon_level_2'],
+  aldric: [
+    'clear_dungeon_level_1',
+    'clear_dungeon_level_2',
+    'repair_broken_wheelbarrow',
+    'deliver_recovery_tools',
+    'stabilize_dangerous_stones',
+    'aid_injured_workers',
+  ],
   maren: ['bring_dungeon_water'],
   vex: ['retrieve_stolen_ring'],
   zane: ['find_lost_amulet', 'collect_keystones', 'find_dawnbringer'],
@@ -142,4 +222,15 @@ export function isQuestUnlocked(
 
 export function getQuestIdsForNpc(npcId: string): string[] {
   return QUEST_IDS_BY_NPC[npcId] ? [...QUEST_IDS_BY_NPC[npcId]] : [];
+}
+
+export function isQuestAvailableInPhase(
+  quest: QuestDefinition,
+  gamePhase: QuestGamePhase
+): boolean {
+  if (!quest.requiredGamePhase) {
+    return true;
+  }
+
+  return quest.requiredGamePhase === gamePhase;
 }
